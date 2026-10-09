@@ -1,0 +1,14 @@
+# 统一使用 LF 行尾：仓库内的 blob 本来就是 LF，但 Windows 上 core.autocrlf=true
+# 会把工作区检出成 CRLF，导致两类问题：
+#   1. frontend 的契约测试直接读源码做正则匹配（断言里带 \n），在 CRLF 工作区必然失败；
+#   2. 本地构建出的前端产物与 CI(Linux) 不一致，zipHash 无法复现。
+# 说明后，任何平台检出都得到 LF，构建与测试结果一致。
+* text=auto eol=lf
+
+# 二进制资源不做行尾转换
+*.otf binary
+*.png binary
+*.webp binary
+*.zip binary
+*.woff binary
+*.woff2 binary
