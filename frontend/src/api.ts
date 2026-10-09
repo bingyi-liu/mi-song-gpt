@@ -1,8 +1,7 @@
 import type { ApiEnvelope } from './types';
 
 // 反代 BASE_PATH 子路径部署下，硬编码的绝对路径（以 "/" 开头）会绕过 BASE_PATH 直接
-// 打到域名根——这类绝对路径不受 <base href> 影响（WebF 下 <base href> 本身也完全不
-// 生效，见 docs/webf/upstream-issues.md #2，不能依赖它，document.baseURI 同样不存在）。
+// 打到域名根——这类绝对路径不受 <base href> 影响，不能依赖它。
 // 从当前页面路径里找出插件路由段之前的部分即为 BASE_PATH 前缀（songloft-org/songloft#407）。
 // vite dev 环境路径不含该段，天然回退为空前缀，与原先硬编码绝对路径的行为一致。
 export function hostPathPrefix(): string {
@@ -34,7 +33,7 @@ function pluginApi() {
 }
 
 async function browserRequest<T>(
-  method: 'GET' | 'POST' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<T> {
@@ -130,6 +129,10 @@ export async function postLong<T>(path: string, body: unknown, timeoutMs: number
   });
   const payload = await response.json();
   return decodePayload<T>(payload, response.status, response.ok);
+}
+
+export async function put<T>(path: string, body: unknown): Promise<T> {
+  return browserRequest<T>('PUT', path, body);
 }
 
 export async function postEnvelope<T>(path: string, body: unknown = {}): Promise<T> {

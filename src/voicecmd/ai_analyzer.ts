@@ -5,6 +5,7 @@
 
 import type { AIConfig, AIAnalysisResult } from '../types';
 import { aiChatCompletionsUrl, maskUrl } from '../utils/ai_url';
+import { applySamplingParams } from '../utils/ai_params';
 
 /** AI System Prompt */
 const AI_SYSTEM_PROMPT = `从指令中提取出操作和音乐信息，只返回JSON：{"action":"...","params":{...},"confidence":"high|medium|low"}
@@ -98,14 +99,15 @@ export class AIAnalyzer {
       { role: 'user', content: `用户指令：${query}` },
     ];
 
+    // 分类任务低温保证输出稳定（1.0 会导致小模型在置信度/动作间乱跳）；
+    // 推理模型（GPT-5/6、o 系列、deepseek-r1…）不接受自定义采样参数，此时自动省略，
+    // 兼顾稳定与兼容（songloft-org/songloft-plugin-miot#508）。
     const body: Record<string, unknown> = {
       model: config.model,
       messages,
-      // 分类任务低温保证输出稳定（1.0 会导致小模型在置信度/动作间乱跳）
-      temperature: 0.2,
-      max_tokens: 120,
       response_format: { type: 'json_object' },
     };
+    applySamplingParams(body, config.model, { temperature: 0.2, maxTokens: 120 });
     // reasoning_split 仅硅基流动（SiliconFlow）原生支持，用于分离推理链使 content 直接是干净 JSON；
     // 其它 OpenAI 兼容接口对未知字段或忽略或严格 400，故按 api_url 条件附加，避免误伤。
     if (/siliconflow/i.test(config.api_url || '')) {

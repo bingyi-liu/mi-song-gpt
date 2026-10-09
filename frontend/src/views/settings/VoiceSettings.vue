@@ -7,6 +7,7 @@ import SlIcon from '../../ui/SlIcon.vue';
 import SlInput from '../../ui/SlInput.vue';
 import SlSelect from '../../ui/SlSelect.vue';
 import SlSwitch from '../../ui/SlSwitch.vue';
+import VoiceSectionNav from './voice/VoiceSectionNav.vue';
 import { del, post, postLong, pluginWebSocketUrl } from '../../api';
 import { AI_PRESET_PROVIDERS } from '../../aiPresets';
 import {
@@ -29,6 +30,17 @@ import {
   state,
 } from '../../store';
 import type { ConversationMessage, MemoryEntity, SearchSource, SelectOption, VoiceCommand } from '../../types';
+
+const voicePanel = ref<VoicePanel>('listen');
+const voicePanels: Array<{ id: VoicePanel; title: string; subtitle: string; icon: string }> = [
+  { id: 'listen', title: '监听', subtitle: '对话与索引', icon: 'record_voice_over' },
+  { id: 'commands', title: '口令', subtitle: '规则与测试', icon: 'mic' },
+  { id: 'memory', title: '记忆', subtitle: '命中与歧义', icon: 'memory' },
+  { id: 'intelligence', title: '搜索与 AI', subtitle: '外部搜索源', icon: 'auto_awesome' },
+  { id: 'qa', title: '问答', subtitle: '大模型接管', icon: 'forum' },
+];
+
+type VoicePanel = 'listen' | 'commands' | 'memory' | 'intelligence' | 'qa';
 
 interface CommandTestResult {
   matched: boolean;
@@ -606,7 +618,7 @@ const aiModelSelectValue = computed(() =>
 /**
  * 模型下拉选择处理。
  * 注意：必须放在 script 方法里调用（模板内联表达式会把 ref 自动解包成原始值，
- * 直接写 `modelCustomActive.value = ...` 会触发 WebF 的 readonly 赋值报错）。
+ * 直接在模板里给 ref 的 .value 赋值是无效写法）。
  */
 function onModelSelect(v: string): void {
   if (v === AI_MODEL_CUSTOM) {
@@ -862,13 +874,20 @@ function formatOutcomeMeta(item: ConversationMessage): string {
 </script>
 
 <template>
+  <VoiceSectionNav v-model="voicePanel" :panels="voicePanels" />
+
+  <div v-show="voicePanel === 'listen'" class="voice-panel" data-voice-panel="listen">
   <SectionCard title="对话监听" icon="record_voice_over" description="监听已启用管理的音箱对话记录，并把语音内容交给语音引擎。">
     <SettingRow title="启用对话监听" subtitle="关闭后会同时关闭语音口令、AI 分析和外部搜索">
-      <SlSwitch :model-value="state.config.conversation_monitor_enabled" @update:model-value="setConversationEnabled" />
+      <SlSwitch aria-label="启用对话监听" :model-value="state.config.conversation_monitor_enabled" @update:model-value="setConversationEnabled" />
     </SettingRow>
     <div class="form-body">
       <div class="field-grid">
-        <div class="field"><label class="field-label">轮询间隔（秒）</label><SlInput :model-value="pollInterval" type="number" @update:model-value="pollInterval = $event" @change="saveNumber('conversation_poll_interval', pollInterval, 1, 30)" /></div>
+        <div class="field">
+          <label class="field-label">轮询间隔（秒）</label>
+          <SlInput :model-value="pollInterval" type="number" @update:model-value="pollInterval = $event" @change="saveNumber('conversation_poll_interval', pollInterval, 1, 30)" />
+          <p class="field-help">默认 2 秒，可设 1～30 秒。无新对话时逐步延长到 5 秒，所设间隔超过 5 秒时保持该值；收到新对话后恢复所设间隔。</p>
+        </div>
         <div class="field setting-field-control"><label class="field-label">调试日志</label><SlSwitch :model-value="state.config.debug_log_enabled" @update:model-value="setSwitch('debug_log_enabled', $event)" /></div>
       </div>
       <div v-if="state.config.conversation_monitor_enabled" class="status-panel status-panel-inset">
@@ -909,10 +928,12 @@ function formatOutcomeMeta(item: ConversationMessage): string {
       <div class="field-actions"><SlButton variant="outlined" label="刷新索引" icon="refresh" @click="refreshIndex" /></div>
     </div>
   </SectionCard>
+  </div>
 
+  <div v-show="voicePanel === 'commands'" class="voice-panel" data-voice-panel="commands">
   <SectionCard title="语音口令" icon="mic" description="为每种操作维护可识别的口令词；添加、删除和启停都会立即保存。">
     <SettingRow title="启用语音口令" :subtitle="state.config.conversation_monitor_enabled ? '将对话监听结果交给播放器执行' : '需要先开启对话监听'">
-      <SlSwitch :model-value="state.config.voice_command_enabled" :disabled="!state.config.conversation_monitor_enabled" @update:model-value="setVoiceEnabled" />
+      <SlSwitch aria-label="启用语音口令" :model-value="state.config.voice_command_enabled" :disabled="!state.config.conversation_monitor_enabled" @update:model-value="setVoiceEnabled" />
     </SettingRow>
     <div v-if="!state.config.conversation_monitor_enabled" class="dependency-hint"><SlIcon name="warning" :size="18" /><span>需要先开启"对话监听"才能使用语音口令。</span></div>
     <div v-if="state.config.voice_command_enabled" class="dependency-hint"><SlIcon name="info" :size="18" /><span>口令触发后，音箱会先播完自身的语音回复，再由插件打断并开始播放，中间会有短暂延迟。</span></div>
@@ -954,9 +975,11 @@ function formatOutcomeMeta(item: ConversationMessage): string {
       <pre v-if="commandTestResult" class="result-pre" :class="commandTestSuccess ? 'result-success' : 'result-error'">{{ commandTestResult }}</pre>
     </div>
   </SectionCard>
+  </div>
 
+  <div v-show="voicePanel === 'memory'" class="voice-panel" data-voice-panel="memory">
   <SectionCard title="语音记忆" icon="memory" description="记录用户说法与歌曲实体的对应关系，减少重复 AI 分析。">
-    <SettingRow title="启用语音记忆" subtitle="关闭后保留历史记忆，但不再写入新记录"><SlSwitch :model-value="state.config.voice_memory_enabled" @update:model-value="setSwitch('voice_memory_enabled', $event)" /></SettingRow>
+    <SettingRow title="启用语音记忆" subtitle="关闭后保留历史记忆，但不再写入新记录"><SlSwitch aria-label="启用语音记忆" :model-value="state.config.voice_memory_enabled" @update:model-value="setSwitch('voice_memory_enabled', $event)" /></SettingRow>
     <div class="form-body">
       <button type="button" class="advanced-toggle" @click="toggleMemoryExpanded">
         <span>{{ memoryExpanded ? '收起语音记忆' : '展开语音记忆' }}</span>
@@ -983,9 +1006,11 @@ function formatOutcomeMeta(item: ConversationMessage): string {
       </div>
     </div>
   </SectionCard>
+  </div>
 
+  <div v-show="voicePanel === 'intelligence'" class="voice-panel" data-voice-panel="intelligence">
   <SectionCard title="外部搜索" icon="search" description="本地曲库未命中时，按优先级调用已启用的搜索源。">
-    <SettingRow title="启用外部搜索" :subtitle="state.config.voice_command_enabled ? '搜索源需要返回 topone 格式结果' : '需要先开启语音口令'"><SlSwitch :model-value="state.config.external_search_enabled" :disabled="!state.config.voice_command_enabled" @update:model-value="setExternalSearchEnabled" /></SettingRow>
+    <SettingRow title="启用外部搜索" :subtitle="state.config.voice_command_enabled ? '搜索源需要返回 topone 格式结果' : '需要先开启语音口令'"><SlSwitch aria-label="启用外部搜索" :model-value="state.config.external_search_enabled" :disabled="!state.config.voice_command_enabled" @update:model-value="setExternalSearchEnabled" /></SettingRow>
     <div v-if="!state.config.voice_command_enabled" class="dependency-hint"><SlIcon name="warning" :size="18" /><span>需要先开启"语音口令"才能使用外部搜索。</span></div>
     <div class="form-body">
       <div class="field"><label class="field-label">搜索优先级</label><SlSelect :model-value="state.config.search_priority" :options="searchPriorityOptions" aria-label="搜索优先级" @update:model-value="saveConfig({ search_priority: $event as 'parallel' | 'local_first' | 'external_first' })" /></div>
@@ -1014,12 +1039,11 @@ function formatOutcomeMeta(item: ConversationMessage): string {
       <h3 class="card-title section-subtitle">已配置源</h3>
       <div v-for="source in state.config.external_search_sources" :key="source.id" class="sub-panel sub-panel-inset">
         <!-- 各包一层 .field 是为了拿到与其它表单行一致的 16px 行距：.field-grid 的
-             row-gap 是 0，裸 input 会挤在一起。这一行在 APP 里整体不显示的根因是
-             WebF 不绘制 grid 容器，已在 style.css 把 .field-grid 改成 flex
-             （songloft-org/songloft-plugin-miot#79）。 -->
+             row-gap 是 0，裸 input 会挤在一起。.field-grid 用 flex 而非 grid 的
+             原因见 style.css（songloft-org/songloft-plugin-miot#79）。 -->
         <div class="field-grid"><div class="field"><SlInput v-model="sourceDrafts[source.id].name" placeholder="显示名称" /></div><div class="field"><SlInput v-model="sourceDrafts[source.id].url" placeholder="接口地址" /></div></div>
         <SlInput v-model="sourceDrafts[source.id].token" type="password" placeholder="Bearer Token（可选）" />
-        <SettingRow title="启用此源"><SlSwitch v-model="sourceDrafts[source.id].enabled" /></SettingRow>
+        <SettingRow title="启用此源"><SlSwitch v-model="sourceDrafts[source.id].enabled" :aria-label="`启用搜索源 ${sourceDrafts[source.id].name || source.id}`" /></SettingRow>
         <div class="field-actions"><SlButton variant="text" label="移除" icon="delete" @click="removeSource(source.id)" /></div>
       </div>
       <div v-if="!state.config.external_search_sources.length" class="empty-state">暂无已配置源，从上方「快速选择」添加，或手动添加</div>
@@ -1033,7 +1057,7 @@ function formatOutcomeMeta(item: ConversationMessage): string {
   </SectionCard>
 
   <SectionCard title="AI 口令分析" icon="auto_awesome" description="可选的 OpenAI 兼容接口，用于解析复杂自然语言口令。">
-    <SettingRow title="启用 AI 分析" :subtitle="state.config.voice_command_enabled ? '规则和记忆未命中时再调用 AI' : '需要先开启语音口令'"><SlSwitch :model-value="!!state.config.ai_config.enabled" :disabled="!state.config.voice_command_enabled" @update:model-value="setAIEnabled" /></SettingRow>
+    <SettingRow title="启用 AI 分析" :subtitle="state.config.voice_command_enabled ? '规则和记忆未命中时再调用 AI' : '需要先开启语音口令'"><SlSwitch aria-label="启用 AI 分析" :model-value="!!state.config.ai_config.enabled" :disabled="!state.config.voice_command_enabled" @update:model-value="setAIEnabled" /></SettingRow>
     <div v-if="!state.config.voice_command_enabled" class="dependency-hint"><SlIcon name="warning" :size="18" /><span>需要先开启"语音口令"才能使用 AI 分析。</span></div>
     <div class="form-body">
       <div class="field">
@@ -1053,7 +1077,7 @@ function formatOutcomeMeta(item: ConversationMessage): string {
         <div class="field">
           <label class="field-label">模型</label>
           <!-- 复用 .inline-fields 而不是手写 display:flex：见 style.css .model-row 注释，
-               WebF 下子项没有显式 flex 尺寸就不会收缩，下拉会把「刷新」挤出本列。 -->
+               子项没有显式 flex 尺寸就不会收缩，下拉会把「刷新」挤出本列。 -->
           <div class="inline-fields model-row">
             <SlSelect
               :model-value="aiModelSelectValue"
@@ -1068,8 +1092,7 @@ function formatOutcomeMeta(item: ConversationMessage): string {
           </div>
           <!-- 自定义模型名：仅在下拉选「自定义模型名…」或当前模型不在列表时展开（部分服务不支持 /v1/models 或列表缺目标模型） -->
           <template v-if="modelCustomActive">
-            <!-- 不套 auto 宽的裸 div：Flutter 系输入框是 RenderWidget，包一层会被 WebF
-                 量到视口宽（SlButton.vue 顶部注释同源），间距用自身 margin-top。 -->
+            <!-- 不套 auto 宽的裸 div（会按放松约束量到视口宽），间距用自身 margin-top。 -->
             <SlInput
               class="model-custom-input"
               :model-value="state.config.ai_config.model || ''"
@@ -1086,11 +1109,13 @@ function formatOutcomeMeta(item: ConversationMessage): string {
       <div class="status-chips">
         <span class="chip" :class="aiConnChipClass">{{ aiConnText }}</span>
       </div>
-      <div v-if="aiModelError" class="field-help" style="color:#ef5350;">{{ aiModelError }}</div>
+      <div v-if="aiModelError" class="field-help field-error">{{ aiModelError }}</div>
       <div class="command-test-panel command-test-panel-inset"><strong>AI 分析测试</strong><div class="inline-fields"><SlInput v-model="aiTestQuery" placeholder="输入自然语言口令" @submit="testAI" /><SlButton variant="outlined" label="测试分析" icon="science" :disabled="aiTestBusy" @click="testAI" /></div><pre v-if="aiTestResult" class="result-pre">{{ aiTestResult }}</pre></div>
     </div>
   </SectionCard>
+  </div>
 
+  <div v-show="voicePanel === 'qa'" class="voice-panel" data-voice-panel="qa">
   <SectionCard title="问答接管" icon="forum" description="播放类指令之外的问题：小爱能答则不打扰，答不上来由大模型接管回答（可联网）。">
     <SettingRow title="启用问答接管" :subtitle="state.config.voice_command_enabled ? '先等小爱原生回答，答不上来才切换问答模型' : '需要先开启语音口令'"><SlSwitch :model-value="!!state.config.qa_config?.enabled" :disabled="!state.config.voice_command_enabled" @update:model-value="setQAEnabled" /></SettingRow>
     <div v-if="!state.config.voice_command_enabled" class="dependency-hint"><SlIcon name="warning" :size="18" /><span>需要先开启"语音口令"才能使用问答接管。</span></div>
@@ -1118,4 +1143,5 @@ function formatOutcomeMeta(item: ConversationMessage): string {
       <div class="command-test-panel command-test-panel-inset"><strong>问答测试</strong><p>直接验证问答模型与联网搜索，不会打断音箱播报。</p><div class="inline-fields"><SlInput v-model="qaTestQuery" placeholder="问点什么，比如：今天北京天气怎么样" @submit="testQA" /><SlButton variant="outlined" label="测试问答" icon="science" :disabled="qaTestBusy" @click="testQA" /></div><pre v-if="qaTestResult" class="result-pre" :class="qaTestSuccess ? 'result-success' : 'result-error'">{{ qaTestResult }}</pre></div>
     </div>
   </SectionCard>
+  </div>
 </template>

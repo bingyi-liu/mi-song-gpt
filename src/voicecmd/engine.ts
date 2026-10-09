@@ -36,6 +36,19 @@ interface MatchResult {
   argument: string;
 }
 
+interface SmartResumeTask {
+  accountId: string;
+  deviceId: string;
+  revision: number;
+  startedAt: number;
+  position: number;
+}
+
+const SMART_RESUME_INITIAL_DELAY_MS = 1000;
+const SMART_RESUME_FAST_INTERVAL_MS = 1000;
+const SMART_RESUME_FAST_QUERIES = 4;
+const SMART_RESUME_NORMAL_INTERVAL_MS = 5000;
+
 /**
  * 独立歌曲候选：不在任何歌单里的歌，由 findStandaloneSongByName 经 songs.getById 拿到完整字段。
  * type 决定电台转码是否生效、duration 决定能否注册自动切歌定时器，两者都不能丢
@@ -120,6 +133,7 @@ const COMMAND_PRIORITY: Record<string, number> = {
   'sleep_timer': 7,
   'cancel_sleep_timer': 7,
   'query_sleep_timer': 7,
+  'resume': 8,
   'stop': 8,
 };
 
@@ -135,7 +149,8 @@ const INDEX_READY_WAIT_MS = 5000;
 /** 本地独立歌曲 URL 健康检查超时（ms），利用 TTS 播报窗口期异步验证，不增加用户感知延迟。 */
 const URL_HEALTH_CHECK_TIMEOUT_MS = 3000;
 
-const FIXED_CONTROL_COMMAND_TYPES = new Set(['set_play_mode', 'set_volume', 'favorite', 'next', 'previous', 'stop', 'sleep_timer', 'cancel_sleep_timer', 'query_sleep_timer', 'play_index']);
+// resume 必须进入真实语音消息的固定控制匹配，否则停止后的「继续播放」无法恢复自动切歌（songloft-org/songloft#490）。
+const FIXED_CONTROL_COMMAND_TYPES = new Set(['set_play_mode', 'set_volume', 'favorite', 'next', 'previous', 'resume', 'stop', 'sleep_timer', 'cancel_sleep_timer', 'query_sleep_timer', 'play_index']);
 const SEARCH_COMMAND_TYPES = new Set(['play_song', 'play_playlist', 'play_artist']);
 const BUILTIN_STOP_KEYWORDS = ['暂停播放', '停止播放', '暂停音乐', '停一下', 'pause', 'stop', '暂停'];
 
@@ -205,7 +220,7 @@ export class VoiceEngine {
   private memoryInitialized: boolean = false;
   private enabled: boolean = false;
   private resumeTimer: any = null;
-  private resumeCancelled: boolean = false;
+  private resumeTask: SmartResumeTask | null = null;
   private sleepTimers: Map<string, SleepTimer> = new Map();
 
   constructor(
@@ -235,6 +250,7 @@ export class VoiceEngine {
   /** 启用/禁用语音口令引擎 */
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
+    if (!enabled) this.cancelPendingResume();
     songloft.log.info(`[VoiceEngine] ${enabled ? 'Enabled' : 'Disabled'}`);
   }
 
@@ -312,6 +328,9 @@ export class VoiceEngine {
     if (!query || query.trim() === '') {
       return finish('none', '空查询', false);
     }
+
+    // 新对话一到就作废旧恢复任务，不能等账号查询、规则匹配或 AI 请求结束后才取消。
+    this.cancelPendingResume(msg.account_id, msg.device_id);
 
     // 找到设备对应的 accountId
     const accountId = await this.findAccountForDevice(msg.device_id);
@@ -853,6 +872,8 @@ export class VoiceEngine {
       for (const keyword of item.cmd.keywords) {
         const idx = query.indexOf(keyword);
         if (idx >= 0) {
+          // 序号口令必须包含完整有效的序号，不能把“播放第一周”等名称当作跳播。
+          if (item.cmd.type === 'play_index' && parseSongIndex(query.slice(idx)) <= 0) continue;
           const kwLen = Array.from(keyword).length;
           if (kwLen > bestKeywordLen || (kwLen === bestKeywordLen && item.priority < bestPriority)) {
             bestKeywordLen = kwLen;
@@ -877,6 +898,8 @@ export class VoiceEngine {
     let bestInserted = Infinity;
 
     for (const item of enabledCommands) {
+      // “播放第”不能跨过“歌单/歌曲”等文字，否则会抢占名称中含“第N”的搜索口令。
+      if (item.cmd.type === 'play_index') continue;
       for (const keyword of item.cmd.keywords) {
         const kwRunes = Array.from(keyword);
         const m = fuzzySubseqMatch(qRunes, kwRunes, FUZZY_MAX_GAP);
@@ -918,7 +941,7 @@ export class VoiceEngine {
         await this.executePlayPlaylist(result.argument, accountId, deviceId);
         break;
       case 'play_index':
-        await this.executePlayIndex(query || `${result.keyword}${result.argument}`, accountId, deviceId);
+        await this.executePlayIndex(`${result.keyword}${result.argument}`, accountId, deviceId);
         break;
       case 'play_song':
         playedSong = await this.executePlaySong(result.argument, accountId, deviceId);
@@ -2004,106 +2027,151 @@ export class VoiceEngine {
   /**
    * 取消待执行的恢复操作
    */
-  private cancelPendingResume(): void {
+  private cancelPendingResume(accountId?: string, deviceId?: string): void {
+    if (this.resumeTask &&
+      ((accountId && this.resumeTask.accountId !== accountId) || (deviceId && this.resumeTask.deviceId !== deviceId))) return;
     if (this.resumeTimer !== null) {
       clearTimeout(this.resumeTimer);
       this.resumeTimer = null;
     }
-    this.resumeCancelled = true;
+    this.resumeTask = null;
   }
 
   /**
-   * 调度智能恢复：先等 3 秒让小爱开始 TTS，再轮询设备状态等待 TTS 结束后重新推送歌曲
+   * 给小爱一秒启动播报，短窗口内读取新状态；旧任务在每次异步返回后核对身份。
    */
   private scheduleSmartResume(pm: import('../player/manager').PlaylistManager, accountId: string, deviceId: string): void {
     this.cancelPendingResume();
-    this.resumeCancelled = false;
-    this.resumeTimer = setTimeout(async () => {
+    const task: SmartResumeTask = {
+      accountId, deviceId,
+      revision: pm.getPlaybackRevision(),
+      startedAt: Date.now(),
+      position: pm.getPosition(),
+    };
+    this.resumeTask = task;
+    this.resumeTimer = setTimeout(() => {
       this.resumeTimer = null;
-      await this.smartResume(pm, accountId, deviceId);
-    }, 3000);
+      void this.smartResume(pm, task).catch(e => {
+        songloft.log.warn('[VoiceEngine] Smart resume failed: ' + String(e));
+      });
+    }, SMART_RESUME_INITIAL_DELAY_MS);
   }
 
   /**
    * 等待小爱 TTS 播报结束后重新推送当前歌曲 URL
    */
-  private async smartResume(pm: import('../player/manager').PlaylistManager, accountId: string, deviceId: string): Promise<void> {
-    if (!pm.isPlaying() || this.resumeCancelled) return;
-
+  private async smartResume(pm: import('../player/manager').PlaylistManager, task: SmartResumeTask): Promise<void> {
+    const isTaskCurrent = () => this.enabled && this.resumeTask === task;
+    const isCurrent = () => isTaskCurrent() && pm.isPlaying() && pm.getPlaybackRevision() === task.revision;
+    if (!isCurrent()) return;
     const config = await this.configManager.getConfig();
+    if (!isCurrent()) return;
     const timeoutSec = Math.max(5, Math.min(120, config.smart_resume_timeout ?? 30));
     const maxWaitMs = timeoutSec * 1000;
-    const pollInterval = 2000;
-    const startTime = Date.now();
     let deviceBecameIdle = false;
     let deviceTakenOver = false;
-    let lastDevicePosition = 0;
-    let takenOverDuration = 0;
+    let resumePosition = task.position;
+    let fastQueries = 0;
+    let idleConfirmationQueries = 0;
+    let idleHits = 0;
+    let lastPosition = -1;
+    let lastSampleAt = -1;
+    let lastStatus = -1;
+    let progressStalled = false;
 
-    while (Date.now() - startTime < maxWaitMs) {
-      if (!pm.isPlaying() || this.resumeCancelled) return;
-
-      const deviceStatus = await this.minaService.getPlayState(accountId, deviceId);
-      if (deviceStatus.status !== 1) {
-        deviceBecameIdle = true;
-        break;
+    while (Date.now() - task.startedAt < maxWaitMs) {
+      if (!isCurrent()) return;
+      // 快速窗口耗尽后，首次发现 idle 仍可加一次确认，避免已说完又等五秒。
+      const confirmIdle = idleHits === 1 && idleConfirmationQueries < 1;
+      const fast = fastQueries < SMART_RESUME_FAST_QUERIES || confirmIdle;
+      if (fastQueries < SMART_RESUME_FAST_QUERIES) fastQueries++;
+      else if (confirmIdle) idleConfirmationQueries++;
+      const st = await this.minaService.getPlayState(task.accountId, task.deviceId, fast ? { verify: true } : {});
+      if (!isCurrent()) return;
+      const sampleAt = st.sampledAt ?? Date.now();
+      if (st.status < 0) {
+        // 查询失败不是「播报结束」。停止快速回读，遵守 Mina 的失败退避。
+        fastQueries = SMART_RESUME_FAST_QUERIES;
+        idleHits = 0;
+        lastPosition = -1;
+        lastStatus = -1;
+        progressStalled = false;
+      } else if (sampleAt >= task.startedAt && sampleAt > lastSampleAt) {
+        lastSampleAt = sampleAt;
+        lastStatus = st.status;
+        const stream = pm.matchDeviceStream({ ...st, status: 1 });
+        // 某些固件在实际播放时连续误报 paused/stopped；进度推进时只校准，不再发 play（#449）。
+        if ((st.status === 0 || st.status === 1 || st.status === 2) && stream !== 'foreign' && st.hasPosition) {
+          if (lastPosition >= 0 && st.position - lastPosition + 1e-6 >= 0.1) {
+            songloft.log.info('[VoiceEngine] Device auto-resumed, progress confirmed; resetting timer only');
+            pm.resetAutoNextTimer(st.position * pm.getPlaybackSpeed() + pm.getStreamSeekOffsetSec());
+            return;
+          }
+          progressStalled = lastPosition >= 0 && st.position >= lastPosition;
+          lastPosition = st.position;
+        } else {
+          lastPosition = -1;
+          progressStalled = false;
+        }
+        if (st.status === 0 || st.status === 2) {
+          idleHits++;
+          progressStalled = false;
+          if (st.hasPosition && stream === 'ours') {
+            resumePosition = st.position * pm.getPlaybackSpeed() + pm.getStreamSeekOffsetSec();
+          }
+          // 两次新采样确认，给延迟启动的播报留出窗口，缓存不能累积命中。
+          if (idleHits >= 2) {
+            deviceBecameIdle = true;
+            break;
+          }
+        } else if (st.status === 1) {
+          idleHits = 0;
+          if (stream === 'foreign') {
+            // 外来媒体可能就是正在播报的小爱回答，先等结束，不能立刻重推打断。
+            deviceTakenOver = true;
+            lastPosition = -1;
+            progressStalled = false;
+          }
+        } else {
+          idleHits = 0;
+          lastPosition = -1;
+          lastStatus = -1;
+          progressStalled = false;
+        }
       }
-      // status=1 只说明音箱在响。小爱可能已经用 REPLACE_ALL 把播放项换成它自己的内容，
-      // 此时既不能把它的进度当成我们歌的进度，也不能靠裸 play 续回来——只能重推 URL
-      // （songloft-org/songloft-plugin-miot#96）。
-      if (pm.matchDeviceStream(deviceStatus) === 'foreign') {
-        deviceTakenOver = true;
-        takenOverDuration = deviceStatus.duration;
-        break;
-      }
-      lastDevicePosition = deviceStatus.position;
-
-      await new Promise(r => setTimeout(r, pollInterval));
+      const remainingMs = maxWaitMs - (Date.now() - task.startedAt);
+      if (remainingMs <= 0) break;
+      const interval = fastQueries < SMART_RESUME_FAST_QUERIES || (idleHits === 1 && idleConfirmationQueries < 1)
+        ? SMART_RESUME_FAST_INTERVAL_MS : SMART_RESUME_NORMAL_INTERVAL_MS;
+      await new Promise(r => setTimeout(r, Math.min(interval, remainingMs)));
     }
 
-    if (!pm.isPlaying() || this.resumeCancelled) return;
-
-    if (deviceTakenOver) {
-      // 设备在放别的媒体：位置只能用本地挂钟推算（设备上报的是小爱内容的进度，不能用）。
-      // 挂起期间 playStartTimeMs 没被动过，getPosition() 仍是可用的估算值。
-      const replayFrom = pm.getPosition();
-      songloft.log.warn(`[VoiceEngine] Speaker taken over by assistant (deviceDuration=${takenOverDuration}s), re-pushing our URL seek=${replayFrom.toFixed(1)}s`);
-      const ok = await pm.replayCurrent(replayFrom);
-      if (!ok) {
-        songloft.log.warn('[VoiceEngine] Failed to re-push URL after speaker takeover');
-        await pm.stop();
-      }
+    if (!isCurrent()) return;
+    if (!deviceBecameIdle && (lastStatus < 0 || (!deviceTakenOver && !progressStalled))) {
+      // 未知状态/缺失进度不能证明已续播，也不能据此重推。恢复本地驱动，不发送设备指令。
+      songloft.log.warn('[VoiceEngine] Smart resume timed out without playback evidence; restoring timer only');
+      pm.resetAutoNextTimer(resumePosition);
       return;
     }
 
-    if (!deviceBecameIdle) {
-      // 超时退出：设备一直在播放，说明已自动恢复，仅重置切歌定时器
-      // 不发送 play 命令，避免部分设备（如 L15A）收到多余指令后从头播放
-      songloft.log.info('[VoiceEngine] Device auto-resumed, resetting timer only');
-      // 设备给的是流内偏移，带 seek/倍速续播时要换算回曲内绝对位置：
-      // 流内偏移 × speed + seekOffset（speed=1 时退化为只加 seekOffset）
-      pm.resetAutoNextTimer(lastDevicePosition * pm.getPlaybackSpeed() + pm.getStreamSeekOffsetSec());
-      return;
+    if (deviceBecameIdle && !deviceTakenOver) {
+      const resumed = await pm.resumePlayback({ positionSec: resumePosition, isCurrent: isTaskCurrent });
+      if (resumed) {
+        songloft.log.info('[VoiceEngine] Resume command sent after voice interaction; verification pending');
+        return;
+      }
+      if (!isCurrent()) return;
     }
 
-    const resumed = await pm.resumePlayback();
-    if (resumed) {
-      songloft.log.info('[VoiceEngine] Playback resumed (continue position) after voice interaction');
-      return;
-    }
-
-    // 设备端媒体上下文已被语音打断清掉，只能重推 URL。带上位置让服务端产出以该处为开头的流，
-    // 不再从头重播整首（songloft-org/songloft-plugin-miot#60）。优先用设备实测位置；
-    // 设备不上报 play_song_detail 时退化为本地挂钟位置（会多跳过语音交互那几秒，仍好过从 0 开始）。
-    const replayFrom = lastDevicePosition > 0
-      ? lastDevicePosition * pm.getPlaybackSpeed() + pm.getStreamSeekOffsetSec()
-      : pm.getPosition();
-    const ok = await pm.replayCurrent(replayFrom);
+    // 被接管或超时仍无进度：带挂起时的位置重推，不把整个播报等待时间算成已听内容。
+    // 失败推送自身只停一次定时器；版本再变化说明已有新操作，不能替它收尾。
+    const replayRevision = pm.getPlaybackRevision() + 1;
+    const ok = await pm.replayCurrent(resumePosition, isTaskCurrent);
     if (ok) {
-      songloft.log.info(`[VoiceEngine] Playback restored via replay after voice interaction seek=${replayFrom.toFixed(1)}s`);
-    } else {
+      songloft.log.info(`[VoiceEngine] Playback restored via replay after voice interaction seek=${resumePosition.toFixed(1)}s`);
+    } else if (isTaskCurrent() && pm.getPlaybackRevision() === replayRevision && pm.isPlaying() && pm.isVoiceSuspended()) {
       songloft.log.warn('[VoiceEngine] Failed to restore playback after voice interaction');
-      await pm.stop();
+      await pm.stop(false);
     }
   }
 

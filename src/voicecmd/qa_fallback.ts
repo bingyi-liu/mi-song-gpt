@@ -16,6 +16,7 @@ import type { ConfigManager } from '../config/manager';
 import type { MinaService } from '../service/service';
 import type { AIAnalysisResult, AskMessage, ConversationMessage, QAConfig } from '../types';
 import { aiChatCompletionsUrl, aiResponsesUrl, maskUrl } from '../utils/ai_url';
+import { applySamplingParams } from '../utils/ai_params';
 
 // ===== 类型 =====
 
@@ -315,13 +316,13 @@ export class QAFallback {
     const messages = await this.buildMessages(cfg, scope, query, withHistory);
     const endpoint = aiChatCompletionsUrl(cfg.api_url);
     songloft.log.info(`[QA] chat → ${maskUrl(endpoint)} model=${cfg.model} msgs=${messages.length}`);
-    const body = {
+    const body: Record<string, unknown> = {
       model: cfg.model,
       messages,
-      temperature: 0.7,
-      max_tokens: 600,
       stream: false,
     };
+    // 问答模型也走同一套兼容层：推理模型省略采样参数，避免 400
+    applySamplingParams(body, cfg.model, { temperature: 0.7, maxTokens: 600 });
     const data = await this.postJSON(endpoint, body, cfg.api_key, cfg.timeout);
     const content = data?.choices?.[0]?.message?.content;
     const cleaned = QAFallback.sanitizeForTTS(typeof content === 'string' ? content : '');

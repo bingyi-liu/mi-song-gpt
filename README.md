@@ -66,6 +66,16 @@ npm run dev         # watch + auto-upload to local Songloft
 npm run validate    # verify plugin.json hashes
 ```
 
+### 胶囊迷你播放器材质
+
+播放器保留宿主玻璃填充的 RGB，亮色不透明度至少 96%、暗色至少 92%，宿主更实心的填充继续保留。手机和宽屏共用独立背景模糊层，按钮和文字保持清晰；不支持模糊、减少透明度或增强对比度时使用实心填充。主题、宿主偏好与浏览器偏好变化会实时更新，缺少新偏好的 Flutter/旧宿主消息仍可使用。
+
+填充保护与对比度回归见 `frontend/tests/player_material.test.mjs`，覆盖默认 Flutter/Lynx 亮暗色与黑白背景，不保证任意自定义主题色板都满足对比度。运行 `cd frontend && npm run typecheck && npm run build && npm test`；测试使用构建产物，因此需先构建。
+
+## DLNA 投屏接收
+
+插件可作为一个局域网 DLNA/UPnP 媒体渲染器（MediaRenderer）被手机投屏 App 发现：收到 MP3 投放后转发到指定的已管理音箱播放。宿主侧需开放 `/dlna` 公共路径（见 `plugin.json` 的 `publicPaths`）。配置入口：插件页 → 设置 → 工具 → **DLNA 接收**。详见 [docs/dlna-receiver.md](docs/dlna-receiver.md)。
+
 ## 设备分组（多房间同步）
 
 把多台音箱归入同一「设备分组」后，对组内**任一**音箱的播放控制会自动同步给组内**其他**成员，实现多房间同步播放。

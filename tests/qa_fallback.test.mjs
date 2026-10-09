@@ -1,5 +1,31 @@
 import assert from 'node:assert/strict';
-import { isXiaoAIAnswerFailure, QAFallback } from '../src/voicecmd/qa_fallback.ts';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+
+// qa_fallback.ts 里的相对导入是「无扩展名」的 TS 写法，Node 的 ESM 加载器解析不了
+// （ERR_MODULE_NOT_FOUND），所以与其他测试一致：用 typescript 转译 + 自建 require 加载。
+const require = createRequire(import.meta.url);
+const ts = require('typescript');
+
+function loadSource(path, dependencies = {}) {
+  const source = readFileSync(new URL(path, import.meta.url), 'utf8');
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  });
+  const exports = {};
+  new Function('require', 'exports', outputText)(name => {
+    assert.ok(Object.hasOwn(dependencies, name), `unexpected dependency: ${name}`);
+    return dependencies[name];
+  }, exports);
+  return exports;
+}
+
+const aiUrl = loadSource('../src/utils/ai_url.ts');
+const aiParams = loadSource('../src/utils/ai_params.ts');
+const { isXiaoAIAnswerFailure, QAFallback } = loadSource('../src/voicecmd/qa_fallback.ts', {
+  '../utils/ai_url': aiUrl,
+  '../utils/ai_params': aiParams,
+});
 
 // Global songloft stub for logging in tests
 globalThis.songloft = {
