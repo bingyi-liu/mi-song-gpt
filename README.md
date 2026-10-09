@@ -4,6 +4,8 @@
 
 > ℹ️ 与上游的区别：已移除 `updateUrl`（不检查上游更新，自动更新不会覆盖本定制版）；`download_url` 指向本仓库 Release，供插件商店/订阅源安装。详细部署、配置、验收与排错见 [DEPLOY.md](DEPLOY.md)。
 
+> 🔄 **已同步上游** [songloft-plugin-miot](https://github.com/songloft-org/songloft-plugin-miot) **v2026.10.9**（含 DLNA 投屏接收、搜索简繁体匹配、设置页/播放器 UI 重构、播放状态校验与对话轮询修复）。同步方式见 [与上游同步](#与上游同步)。
+
 > ™️ **商标声明**：本插件中提到的 "MIoT" "MiHome" 等协议 / 产品名称均归各自商标权人所有，相关名称的出现仅出于互操作和指示性合理使用目的。本插件**未获得任何商标持有人的授权或背书**，与上述商标持有人**无任何关联**。
 
 ## 新增功能
@@ -11,13 +13,33 @@
 | 功能 | 说明 |
 |---|---|
 | **问答接管** | 非播放类指令先等小爱原生回答（默认 4s），答上来了就不打扰；命中"不知道/没听懂/没找到"类兜底话术或超时 → 打断小爱 → 播占位提示 → 问答大模型回答（可选联网搜索），带上下文历史与分段 TTS 播报 |
-| **AI 播放意图语义判定** | 小模型（glm-4-flash / qwen-flash / doubao-mini 等）低温判定：判成播放类才执行，非播放类交给问答接管；prompt 已精简（约 700 token、`max_tokens` 120），判定更快 |
+| **AI 播放意图语义判定** | 小模型（glm-4-flash / qwen-flash / doubao-mini 等）低温判定：判成播放类才执行，非播放类交给问答接管；prompt 已精简（约 700 token、普通模型 `max_tokens` 120）。采样参数按模型自适应：推理模型（GPT-5/6、o 系列、deepseek-r1 等）自动省略 `temperature`/`max_tokens`，避免上游 #508 的 400 报错 |
 | **对话记录来源徽标 + 分阶段耗时** | 「对话监听 → 最近对话记录」每条标注处理来源（口令 / 记忆 / 搜索 / AI播放 / 小爱 / 大模型）与总耗时，下方 meta 行给出判定反馈（判成了什么、有没有执行）和各阶段耗时 |
 | **语音记忆** | 记住之前播过的说法，再次提及直接重播 |
 | **对话记录排序修复** | 按时间降序返回，点「刷新记录」不再把顺序翻成升序 |
 | **默认列表循环** | 默认播放模式由「顺序播放」改为「列表循环」，播完自动从头继续；升级时自动迁移存量设备的旧设置（仅一次），可在播放条随时切回 |
 
-上游自带能力（设备分组多房间同步、法定节假日定时任务、外部搜索源接入等）保持不变，见下文。
+上游自带能力（设备分组多房间同步、法定节假日定时任务、外部搜索源接入、DLNA 投屏接收等）保持不变，见下文。
+
+## 与上游同步
+
+本仓库保留上游 git 血缘：首次导入对应上游 `39994df`（v2026.9.24），此后以 `git merge upstream/main` 同步。
+
+```bash
+git fetch upstream            # upstream = https://github.com/songloft-org/songloft-plugin-miot.git
+git merge upstream/main       # 冲突集中在 plugin.json、README/DEPLOY 与定制版接线点
+```
+
+v2026.10.9 同步带入的上游能力：
+
+| 能力 | 说明 |
+|---|---|
+| **DLNA 投屏接收** | 插件作为局域网 DLNA 媒体渲染器被投屏 App 发现，收到 MP3 投放后转发到指定音箱播放（设置 → 工具 → DLNA 接收，需 `publicPaths: ["/dlna"]` 与新宿主的 `/dlna` 公共路径支持） |
+| **简繁体搜索匹配** | 歌手/歌曲搜索支持繁体输入（opencc 映射表随构建生成 `src/data/traditional-to-simplified-map.ts`） |
+| **设置页与播放器 UI 重构** | 语音设置改为分栏导航（监听 / 口令 / 记忆 / 搜索与 AI / 问答），曲库列表、播放栏、全屏播放器与胶囊迷你播放器材质对齐主程序 |
+| **播放可靠性修复** | 中途停播误判、整点报时后续播、音箱未播完就切歌、播放失败标记导致歌单停播、`ubus` 限流引起的卡顿等 |
+| **对话轮询优化** | 退避重试 + 同设备请求不重叠、启停隔离，降低对话查询频率 |
+| **AI 参数兼容** | 上游 #508：推理模型不接受自定义采样参数；本定制版按模型名自适应处理 |
 
 ## 界面预览
 
@@ -57,14 +79,33 @@ npm run validate    # 校验 plugin.json 哈希
 
 安装：songloft 网页 → 插件页面 → 无需卸载官方「智能音箱」(miot)，两者 entryPath 不同、可共存 → 上传 `dist/mi-song-gpt.jsplugin.zip`。安装后插件名为 **mi-song-gpt**。
 
-配置页四张卡片（对话监听 / 语音口令 / AI 口令分析 / 问答接管）、验收清单与常见问题见 [DEPLOY.md](DEPLOY.md)。
+> ⚠️ **宿主版本要求**：`plugin.json` 的 `renderEngine` 只能是 `webview` / `lynx` 或省略。上游 v2.13.0 已彻底移除 WebF 引擎， 新宿主会直接拒绝 `renderEngine: "webf"` 的包（报 `renderEngine must be "webview" or "lynx" (or omitted)`）——本仓库已修正为 `webview`。
+
+配置页分栏：语音设置（监听 / 口令 / 记忆 / 搜索与 AI / 问答）、设备设置、播放设置、定时与节假日、工具箱（含 DLNA 接收）。验收清单与常见问题见 [DEPLOY.md](DEPLOY.md)。
 
 ## Development
 
 ```bash
 npm run dev         # watch + auto-upload to local Songloft
 npm run validate    # verify plugin.json hashes
+node --test tests/*.mjs        # 插件侧单元测试
+cd frontend && npm test        # 前端契约与播放回归测试（需先构建）
 ```
+
+### Windows 本地构建
+
+Windows 上 Node 18.20.2 / 20.12.2 起禁止直接 `execFileSync('npm.cmd', …)`，而 `@songloft/plugin-builder` 正是这样调 npm 构建前端的，会报：
+
+```text
+📦 Installing frontend dependencies...
+spawnSync npm.cmd EINVAL
+```
+
+本仓库通过 `scripts/patch-plugin-builder.mjs`（`npm install` 的 `postinstall` 自动执行）把 builder 的两处调用改为 `node npm-cli.js …`，无需手工处理；若换用 pnpm/yarn 安装依赖，可手动执行一次 `node scripts/patch-plugin-builder.mjs`。
+
+### 行尾约定
+
+`.gitattributes` 固定 LF（`* text=auto eol=lf`）：`frontend/tests/run.mjs` 等契约测试直接读源码做正则断言，CRLF 工作区会误报；行尾不一致也会让本地构建产物与 CI 的 `zipHash` 不可复现。
 
 ### 胶囊迷你播放器材质
 
