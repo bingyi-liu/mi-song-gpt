@@ -319,17 +319,19 @@ export class VoiceEngine {
       },
     });
 
-    if (!this.enabled) {
-      return finish('none', '引擎未启用', false);
-    }
-
     // 从 AskMessage 中提取 query
     const query = this.extractQuery(msg);
     if (!query || query.trim() === '') {
       return finish('none', '空查询', false);
     }
 
-    // 新对话一到就作废旧恢复任务，不能等账号查询、规则匹配或 AI 请求结束后才取消。
+    // 整点续播独立于语音口令开关；新对话仍须立即作废旧任务。
+    this.playlistManagerMap.cancelHourlyResumes(msg.device_id);
+    if (!this.enabled) {
+      return finish('none', '引擎未启用', false);
+    }
+
+    // 不能等账号查询、规则匹配或 AI 请求结束后才取消语音恢复。
     this.cancelPendingResume(msg.account_id, msg.device_id);
 
     // 找到设备对应的 accountId
@@ -339,15 +341,16 @@ export class VoiceEngine {
       return finish('none', '设备无账号', false);
     }
 
-    // 固定控制命令优先，避免 memory 或 AI 覆盖切歌、停止、音量、播放模式等操作。
-    // matchCommand 使用最长关键词匹配，能正确区分 "停止播放" vs "小时后停止播放"(sleep_timer)；
-    // matchBuiltinStopCommand 仅作兜底（用户禁用 stop 口令时仍保证能停止）。
-    songloft.log.info(`[VoiceEngine] [Rule] Matching fixed control query="${query}"`);
-    const fixedMatchStart = Date.now();
-    const fixedResult = await this.matchCommand(query, FIXED_CONTROL_COMMAND_TYPES) ?? this.matchBuiltinStopCommand(query);
+    // 控制与搜索命令共同匹配（上游 v2026.10.10：避免歌名/歌单名里的控制词被截走），
+    // 胜出的控制仍先于 memory 和 AI 执行。耗时沿用定制版的分阶段统计。
+    songloft.log.info(`[VoiceEngine] [Rule] Matching query="${query}"`);
+    const ruleMatchStart = Date.now();
+    const ruleResult = await this.matchRuleCommand(query);
+    const ruleMatchMs = Date.now() - ruleMatchStart;
+    const fixedResult = ruleResult && FIXED_CONTROL_COMMAND_TYPES.has(ruleResult.command.type) ? ruleResult : null;
     if (fixedResult) {
       songloft.log.info(`[VoiceEngine] [Rule] → Matched fixed control: type=${fixedResult.command.type} keyword="${fixedResult.keyword}" argument="${fixedResult.argument}"`);
-      stages.push({ key: 'rule', label: '固定口令匹配', ms: Date.now() - fixedMatchStart });
+      stages.push({ key: 'rule', label: '固定口令匹配', ms: ruleMatchMs });
       const fixedExecStart = Date.now();
       await this.executeCommand(fixedResult, accountId, msg.device_id, query);
       stages.push({ key: 'exec', label: '执行', ms: Date.now() - fixedExecStart });
@@ -374,13 +377,13 @@ export class VoiceEngine {
       songloft.log.warn('[VoiceMemoryV2] error fallback stage="config_or_memory" error="' + String(error) + '"');
     }
 
-    // 歌曲/歌单规则匹配
-    songloft.log.info(`[VoiceEngine] [Rule] Matching search query="${query}"`);
-    const searchMatchStart = Date.now();
-    const result = await this.matchCommand(query, SEARCH_COMMAND_TYPES);
+    // 歌曲/歌单规则匹配：复用上面统一次匹配的结果（上游不再重复执行一次匹配，
+    // 否则“歌名里带控制词”的句子会被第二次匹配重新截走）
+    songloft.log.info(`[VoiceEngine] [Rule] Checking search match query="${query}"`);
+    const result = ruleResult && SEARCH_COMMAND_TYPES.has(ruleResult.command.type) ? ruleResult : null;
     if (result) {
       songloft.log.info(`[VoiceEngine] [Rule] → Matched search: type=${result.command.type} keyword="${result.keyword}" argument="${result.argument}"`);
-      stages.push({ key: 'search', label: '口令匹配', ms: Date.now() - searchMatchStart });
+      stages.push({ key: 'search', label: '口令匹配', ms: ruleMatchMs });
 
       // 执行口令
       const searchExecStart = Date.now();
@@ -703,7 +706,7 @@ export class VoiceEngine {
   /** 规则匹配测试：匹配 + 执行 + 返回诊断 */
   private async testRule(query: string, accountId: string, deviceId: string): Promise<CommandTestResult> {
     const ruleStart = Date.now();
-    const result = await this.matchCommand(query);
+    const result = await this.matchRuleCommand(query);
     songloft.log.info(`[VoiceEngine] [Test] rule match done in ${Date.now() - ruleStart}ms → ${result ? `type=${result.command.type} keyword="${result.keyword}" argument="${result.argument}"` : 'no match'}`);
     if (!result) {
       return { matched: false, source: 'rule', executed: false, note: '未匹配到任何口令' };
@@ -839,20 +842,25 @@ export class VoiceEngine {
     };
   }
 
+  /** 真实语音与规则测试共用匹配；内置停止仅在所有已启用口令都未命中时兜底。 */
+  private async matchRuleCommand(query: string): Promise<MatchResult | null> {
+    return await this.matchCommand(query) ?? this.matchBuiltinStopCommand(query);
+  }
+
   /**
    * 匹配语音口令
    * 按优先级遍历所有已启用的口令，使用包含匹配
    * @param query - 用户说的话
    * @returns 匹配结果，null 表示未匹配
    */
-  private async matchCommand(query: string, allowedTypes?: Set<string>): Promise<MatchResult | null> {
+  private async matchCommand(query: string): Promise<MatchResult | null> {
     const commands = await this.configManager.getVoiceCommands();
     if (commands.length === 0) {
       return null;
     }
 
     const enabledCommands = commands
-      .filter(cmd => cmd.enabled && (!allowedTypes || allowedTypes.has(cmd.type)))
+      .filter(cmd => cmd.enabled)
       .map(cmd => ({
         cmd,
         priority: COMMAND_PRIORITY[cmd.type] ?? 99,
@@ -860,6 +868,25 @@ export class VoiceEngine {
 
     if (enabledCommands.length === 0) {
       return null;
+    }
+
+    // 最早出现的搜索口令后面是名称参数，不能再把其中的文字当作新的控制/搜索命令。
+    // 同一起点仍按最长关键词和业务优先级选择（如“播放”与“播放歌单”）。
+    let searchStart = Infinity;
+    let argumentStart = Infinity;
+    let searchKeywordLen = 0;
+    for (const { cmd } of enabledCommands) {
+      if (!SEARCH_COMMAND_TYPES.has(cmd.type)) continue;
+      for (const keyword of cmd.keywords) {
+        if (!keyword) continue;
+        const idx = query.indexOf(keyword);
+        const kwLen = Array.from(keyword).length;
+        if (idx >= 0 && (idx < searchStart || (idx === searchStart && kwLen > searchKeywordLen))) {
+          searchStart = idx;
+          argumentStart = idx + keyword.length;
+          searchKeywordLen = kwLen;
+        }
+      }
     }
 
     // 跨优先级最长关键词匹配：遍历所有命令，取全局最长匹配，长度相同时高优先级优先。
@@ -870,8 +897,9 @@ export class VoiceEngine {
 
     for (const item of enabledCommands) {
       for (const keyword of item.cmd.keywords) {
+        if (!keyword) continue;
         const idx = query.indexOf(keyword);
-        if (idx >= 0) {
+        if (idx >= 0 && idx < argumentStart) {
           // 序号口令必须包含完整有效的序号，不能把“播放第一周”等名称当作跳播。
           if (item.cmd.type === 'play_index' && parseSongIndex(query.slice(idx)) <= 0) continue;
           const kwLen = Array.from(keyword).length;
@@ -1146,7 +1174,8 @@ export class VoiceEngine {
     // 模糊匹配歌单（miss 时按需刷新索引，捡回运行期间新建的歌单 #84）
     const matchedPlaylist = await this.indexingManager.findPlaylistByNameWithRefresh(playlistName);
     if (!matchedPlaylist) {
-      songloft.log.warn(`[VoiceEngine] Playlist not found: ${playlistName}`);
+      const indexStatus = this.indexingManager.getStatus();
+      songloft.log.warn(`[VoiceEngine] Playlist not found: ${playlistName} (indexReady=${indexStatus.ready} playlists=${indexStatus.playlist_count} refreshing=${indexStatus.is_refreshing})`);
       await this.minaService.textToSpeech(accountId, deviceId, `未找到歌单：${playlistName}`);
       return;
     }
@@ -2024,9 +2053,12 @@ export class VoiceEngine {
     }
   }
 
-  /**
-   * 取消待执行的恢复操作
-   */
+  /** 关闭整点续播配置后，立即作废所有设备的恢复任务。 */
+  cancelHourlyResumes(): void {
+    this.playlistManagerMap.cancelHourlyResumes();
+  }
+
+  /** 取消待执行的语音恢复操作。 */
   private cancelPendingResume(accountId?: string, deviceId?: string): void {
     if (this.resumeTask &&
       ((accountId && this.resumeTask.accountId !== accountId) || (deviceId && this.resumeTask.deviceId !== deviceId))) return;

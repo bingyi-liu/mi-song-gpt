@@ -27,14 +27,14 @@
 - 本仓库构建产物：`dist/mi-song-gpt.jsplugin.zip`（已构建好，直接用）
 - 以后改了代码要重新构建：`npm install && npm run build`
 - Windows 下 `npm install` 会自动执行 `scripts/patch-plugin-builder.mjs` 修补 builder 的 `npm.cmd` 调用（否则报 `spawnSync npm.cmd EINVAL`，详见 README）
-- 本版本已同步上游 **v2026.10.9**（带 DLNA 投屏接收、简繁体搜索、设置页/播放器 UI 重构、播放与对话轮询修复）；`renderEngine` 已由 `webf` 修正为 `webview`，新宿主不会再拒绝安装
+- 本版本已同步上游 **v2026.10.10**（带 DLNA 投屏接收、简繁体搜索、设置页/播放器 UI 重构、播放与对话轮询修复、整点报时后续播）；`renderEngine` 已由 `webf` 修正为 `webview`，新宿主不会再拒绝安装
 
 ## 二、安装插件（NAS 上操作）
 
 1. 打开 songloft 网页（`http://NAS_IP:58091`）→ 插件页面
 2. 无需卸载官方"智能音箱"(miot)——本插件 entryPath 为 `mi-song-gpt`，与官方 `miot` **可共存**
 3. 上传 `dist/mi-song-gpt.jsplugin.zip` 安装
-4. 安装后确认插件名为「mi-song-gpt」，版本 `2026.10.9`
+4. 安装后确认插件名为「mi-song-gpt」，版本 `2026.10.10`
 
 > 本定制版已移除 `updateUrl`，官方仓库的自动更新**不会**覆盖你的定制版。
 
@@ -100,7 +100,7 @@ docker-compose 用户把对应 service 注释掉后 `docker compose up -d`。
 | `src/voicecmd/qa_fallback.ts` | **新增**：问答接管模块（兜底话术判定/等待原生回答/打断+占位/LLM+联网/历史/分段TTS） |
 | `src/voicecmd/ai_analyzer.ts` | 判定温度 1.0→0.2；prompt 新增 `qa` 动作与示例（判定更稳）；**判定 prompt 精简**：示例 24→13、删掉逻辑层从不读取的 `rawText`（上游也只在测试里断言），3193→1925 字符（约 1100→700 token），普通模型 `max_tokens` 300→120 —— 每次判定少发约 1/3 输入 |
 | `src/utils/ai_params.ts` | **新增**：采样参数兼容层。上游 #508 因 GPT-5/6 等推理模型拒绝 `temperature`/`max_tokens` 而全部省略，本定制版又要靠低温保证小模型判定稳定，故改为按模型名分流：推理模型（gpt-5/6、o 系列、deepseek-r1、reasoner/reasoning/thinking、qvq、裸 r1）省略，其余模型照旧（判定 0.2/120、问答 0.7/600） |
-| `src/voicecmd/engine.ts` | 全部未命中分支接入 QA 兜底；handleMessage 返回处理来源（供 UI 展示路由结果）；口令测试对 qa 指令只做诊断；新增 testQA |
+| `src/voicecmd/engine.ts` | 全部未命中分支接入 QA 兜底；handleMessage 返回处理来源（供 UI 展示路由结果）；口令测试对 qa 指令只做诊断；新增 testQA；v2026.10.10 采用上游统一的 `matchRuleCommand`（控制/搜索一次匹配，避免歌名里的控制词被截走），同时保留定制版 `finish()` 的分阶段耗时统计 |
 | `src/conversation/monitor.ts` | voice_engine 回调返回后把处理来源回填进消息缓冲；`getMessages` 改为时间降序返回（最新在前），点「刷新记录」不再把顺序翻成升序 |
 | `src/conversation/viewmodel.ts` | 对话记录视图透传 outcome/outcome_detail |
 | `src/handlers/config.ts` | `/config` GET/POST 支持 `qa_config` |
@@ -109,14 +109,14 @@ docker-compose 用户把对应 service 注释掉后 `docker compose up -d`。
 | `src/utils/ai_url.ts` | 新增 `aiResponsesUrl`（方舟 Responses 端点） |
 | `src/types.ts` / `src/config/manager.ts` | 新增 `QAConfig`/`VoiceOutcome` 类型与 `qa_config` 独立存储键 |
 | `frontend/src/*` | 设置页语音分区新增第 5 个分栏「问答」（接入上游 `VoiceSectionNav`）与问答测试；对话监听状态栏新增「AI判定/问答接管」状态 chips；最近对话记录每条标注来源徽标+耗时，并新增判定反馈/分阶段耗时 meta 行 |
-| `plugin.json` | 名称改为 mi-song-gpt；entryPath 改为 `mi-song-gpt`（与官方 miot 共存）；版本 2026.10.9；**`renderEngine` 由 `webf` 改为 `webview`**（上游已移除 WebF，旧值会被新宿主拒装）；移除 updateUrl（防上游自动更新覆盖）；author 改为 wyrt0、homepage 指向本仓库、新增 download_url 指向本仓库 Release（releases/latest，供插件商店/订阅源分发） |
+| `plugin.json` | 名称改为 mi-song-gpt；entryPath 改为 `mi-song-gpt`（与官方 miot 共存）；版本 2026.10.10；**`renderEngine` 由 `webf` 改为 `webview`**（上游已移除 WebF，旧值会被新宿主拒装）；移除 updateUrl（防上游自动更新覆盖）；author 改为 wyrt0、homepage 指向本仓库、新增 download_url 指向本仓库 Release（releases/latest，供插件商店/订阅源分发） |
 | `src/account/manager.ts` / `src/player/manager.ts` 等 | 默认播放模式由「顺序播放」改为「列表循环」：新设备默认值、`normalizePlayMode` 兜底、`playMode` 初始值，以及定时任务 / 语音口令 / 联网搜歌 / 设备列表 / 前端各处兜底统一为 `loop`（模式弹层高亮改为「非列表循环才高亮」） |
 | `src/config/manager.ts` / `src/main.ts` | **新增** `migratePlayModeDefaultOnce()` 一次性迁移：把存量设备落盘的 `play_mode: 'order'` 翻成 `'loop'`（`play_mode_default_migrated` 标志位，只执行一次；之后手动切回的顺序播放不会被覆盖） |
 
 | `scripts/patch-plugin-builder.mjs` | **新增**：Windows 本地构建补丁（builder 用 `execFileSync('npm.cmd', …)`，新 Node 会报 `EINVAL`），由 `postinstall` 自动执行 |
 | `.gitattributes` | **新增**：统一 LF 行尾，避免 Windows 工作区下前端契约测试误报、构建产物与 CI 的 `zipHash` 不可复现 |
 
-升级官方插件时，重新套用以上改动即可（qa_fallback.ts / ai_params.ts 为独立新文件，其余是小接线点）；本次已同步到上游 v2026.10.9，后续可用 `git merge upstream/main` 持续跟进。
+升级官方插件时，重新套用以上改动即可（qa_fallback.ts / ai_params.ts 为独立新文件，其余是小接线点）；本次已同步到上游 v2026.10.10，后续可用 `git merge upstream/main` 持续跟进。
 
 ### 对话记录来源徽标说明
 
@@ -162,6 +162,7 @@ docker-compose 用户把对应 service 注释掉后 `docker compose up -d`。
 - **小爱 answered 但被判"没找到歌曲"**：这是预期——判定为疑似播放指令但本地没这首歌时，让大模型接话而不是播报"没找到"
 - **语义判定 2~5s**：prompt 已精简，普通模型 `max_tokens` 已降到 120，剩下是模型生成速度与网络本身；线上 API 就是这个量级（J3455 上跑本地小模型不划算）
 - **上传插件报 `renderEngine must be "webview" or "lynx"`**：旧包声明的 `webf` 已被上游 v2.13.0 移除，本仓库 v2026.10.9 起改为 `webview`，重新构建上传即可
+- **整点报时时播放被中断**：设置 → 播放 → 「整点报时后续播」（默认关）开启后，整点后 90 秒内的报时打断会自动续播；不想让它自动恢复就保持关闭
 - **Windows 构建报 `spawnSync npm.cmd EINVAL`**：执行一次 `node scripts/patch-plugin-builder.mjs`（`npm install` 的 postinstall 会自动跑）
 - 查看日志：songloft 插件页面下载日志，搜索 `[QA]` / `[VoiceEngine]` 关键字
 
