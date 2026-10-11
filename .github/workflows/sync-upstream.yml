@@ -82,7 +82,12 @@ jobs:
 
       - name: 版本号跟随上游（不降级）
         if: steps.merge.outputs.conflict == 'false'
-        run: node scripts/sync-upstream-version.mjs "${{ steps.upstream.outputs.version }}"
+        id: version
+        run: |
+          node scripts/sync-upstream-version.mjs "${{ steps.upstream.outputs.version }}"
+          # 发版要用**本仓库的**版本号：上游可能只推了提交还没 bump（此时我们的版本更高），
+          # 照搬上游版本会让发版 workflow 把自己的版本号降回去、并覆盖旧 tag 的 Release。
+          echo "resolved=$(node -p \"require('./plugin.json').version\")" >> $GITHUB_OUTPUT
 
       - name: 安装依赖
         if: steps.merge.outputs.conflict == 'false'
@@ -115,7 +120,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh workflow run release.yml --ref "${{ github.ref_name }}" -f version="${{ steps.upstream.outputs.version }}"
+          gh workflow run release.yml --ref "${{ github.ref_name }}" -f version="${{ steps.version.outputs.resolved }}"
 
       - name: 冲突时开 issue
         if: steps.merge.outputs.conflict == 'true'
