@@ -194,7 +194,6 @@ export interface PluginConfig {
   max_song_index: number;
   ai_config: AIConfig;
   qa_config: QAConfig;   // 问答接管配置（mi-song-gpt 新增，独立存储键 qa_config）
-  play_mode_default_migrated?: boolean; // 一次性迁移标志：默认播放模式 order->loop 是否已迁移过存量设备
 }
 
 // ===== 定时任务 =====
@@ -372,48 +371,6 @@ export interface ConversationMessage {
   device_id: string;
   device_name: string;
   message: AskMessage;
-  /**
-   * 语音引擎的处理来源（mi-song-gpt 新增，供对话记录 UI 展示路由结果）。
-   * 由 monitor 在 voice_engine 回调返回后回填进缓冲区里的消息对象。
-   */
-  outcome?: VoiceOutcomeSource;
-  /** 来源的补充说明（如命中的口令类型、AI 动作），用于 UI 悬浮提示 */
-  outcome_detail?: string;
-  /** 结构化的判定反馈与分阶段耗时（UI「最近对话记录」meta 行用），随 outcome 一起回填 */
-  outcome_meta?: OutcomeMeta;
-}
-
-/** 语音引擎处理结果来源 */
-export type VoiceOutcomeSource = 'rule' | 'memory' | 'search' | 'ai' | 'xiaoai' | 'llm' | 'none';
-
-/** 单个处理阶段的耗时（key 供代码分支判断，label 直接给 UI 显示） */
-export interface OutcomeStage {
-  key: 'rule' | 'memory' | 'ai' | 'search' | 'exec' | 'native' | 'llm';
-  label: string;
-  ms: number;
-}
-
-/** 语音引擎对单条消息的判定反馈与耗时明细（mi-song-gpt） */
-export interface OutcomeMeta {
-  /** 语义判定结果：只要判定器启用且返回了结果就带上，无论最终是否执行 */
-  ai?: {
-    action: string;
-    confidence: string;
-    params?: AIAnalysisResult['params'];
-  };
-  /** 分阶段耗时（按发生顺序） */
-  stages?: OutcomeStage[];
-  /** handleMessage 全程耗时 */
-  total_ms: number;
-  /** 是否真正执行了动作或完成接管 */
-  executed?: boolean;
-}
-
-/** 语音引擎处理结果（handleMessage 返回值，monitor 据此回填 outcome） */
-export interface VoiceOutcome {
-  source: VoiceOutcomeSource;
-  detail?: string;
-  meta?: OutcomeMeta;
 }
 
 // ===== 播放状态 =====

@@ -811,66 +811,7 @@ const qaPipelineChipClass = computed(() => {
   return 'chip-success';
 });
 
-// --- 对话记录来源徽标（mi-song-gpt）---
-
-const outcomeLabels: Record<string, string> = {
-  rule: '口令',
-  memory: '记忆',
-  search: '搜索',
-  ai: 'AI播放',
-  xiaoai: '小爱',
-  llm: '大模型',
-};
-
-function outcomeLabel(source?: string): string {
-  return outcomeLabels[source || ''] || '';
-}
-
-function outcomeChipClass(source?: string): string {
-  if (source === 'rule' || source === 'memory' || source === 'search') return 'chip-success';
-  if (source === 'llm') return 'chip-warning';
-  return '';
-}
-
-/** 毫秒 → 友好耗时（<1s 显示 ms，否则保留一位小数秒） */
-function fmtMs(ms: number): string {
-  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
-}
-
-function confidenceLabel(confidence?: string): string {
-  if (confidence === 'high') return '高';
-  if (confidence === 'medium') return '中';
-  if (confidence === 'low') return '低';
-  return confidence || '';
-}
-
-/** 徽标耗时后缀；安装本版本前的历史记录没有 meta，返回空串 */
-function outcomeBadgeSuffix(item: ConversationMessage): string {
-  return item.outcome_meta ? ` · ${fmtMs(item.outcome_meta.total_ms)}` : '';
-}
-
-/**
- * meta 行：语义判定反馈（action/置信度/走向）+ 分阶段耗时 + 总耗时。
- * 历史记录（无 meta）返回空串，模板据此整行隐藏。
- */
-function formatOutcomeMeta(item: ConversationMessage): string {
-  const meta = item.outcome_meta;
-  if (!meta) return '';
-  const parts: string[] = [];
-  if (meta.ai) {
-    const action = commandLabels[meta.ai.action] || meta.ai.action;
-    const route = item.outcome === 'llm' ? '转问答'
-      : item.outcome === 'xiaoai' ? '交回小爱'
-      : item.outcome === 'none' ? '未接管'
-      : meta.executed ? '已执行' : '未执行';
-    parts.push(`判定 ${action}·${confidenceLabel(meta.ai.confidence)}置信 → ${route}`);
-  }
-  for (const stage of meta.stages || []) {
-    parts.push(`${stage.label} ${fmtMs(stage.ms)}`);
-  }
-  parts.push(`共 ${fmtMs(meta.total_ms)}`);
-  return parts.join(' · ');
-}
+// --- 对话记录列表（mi-song-gpt 保留问答接管相关状态 chips，不再回填来源徽标）---
 </script>
 
 <template>
@@ -905,8 +846,7 @@ function formatOutcomeMeta(item: ConversationMessage): string {
       </button>
       <div v-if="conversationMessagesExpanded" class="sub-panel">
         <div v-for="item in state.conversationMessages" :key="String(item.id || item.timestamp)" class="list-item">
-          <span v-if="item.outcome && item.outcome !== 'none'" class="chip" :class="outcomeChipClass(item.outcome)" :title="[item.outcome_detail, formatOutcomeMeta(item)].filter(Boolean).join('\n')">{{ outcomeLabel(item.outcome) + outcomeBadgeSuffix(item) }}</span>
-          <div class="list-item-copy"><strong class="list-item-title">{{ item.query || item.text || '未识别内容' }}</strong><span class="list-item-subtitle">{{ item.device_name || item.device_id || '设备' }} · {{ item.answer || '暂无回复' }}</span><span v-if="formatOutcomeMeta(item)" class="list-item-meta">{{ formatOutcomeMeta(item) }}</span></div>
+          <div class="list-item-copy"><strong class="list-item-title">{{ item.query || item.text || '未识别内容' }}</strong><span class="list-item-subtitle">{{ item.device_name || item.device_id || '设备' }} · {{ item.answer || '暂无回复' }}</span></div>
         </div>
         <div v-if="!state.conversationMessages.length" class="empty-state">暂无对话记录</div>
       </div>

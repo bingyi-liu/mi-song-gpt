@@ -14,21 +14,24 @@
 |---|---|
 | **问答接管** | 非播放类指令先等小爱原生回答（默认 4s），答上来了就不打扰；命中"不知道/没听懂/没找到"类兜底话术或超时 → 打断小爱 → 播占位提示 → 问答大模型回答（可选联网搜索），带上下文历史与分段 TTS 播报 |
 | **AI 播放意图语义判定** | 小模型（glm-4-flash / qwen-flash / doubao-mini 等）低温判定：判成播放类才执行，非播放类交给问答接管；prompt 已精简（约 700 token、普通模型 `max_tokens` 120）。采样参数按模型自适应：推理模型（GPT-5/6、o 系列、deepseek-r1 等）自动省略 `temperature`/`max_tokens`，避免上游 #508 的 400 报错 |
-| **对话记录来源徽标 + 分阶段耗时** | 「对话监听 → 最近对话记录」每条标注处理来源（口令 / 记忆 / 搜索 / AI播放 / 小爱 / 大模型）与总耗时，下方 meta 行给出判定反馈（判成了什么、有没有执行）和各阶段耗时 |
-| **语音记忆** | 记住之前播过的说法，再次提及直接重播 |
-| **对话记录排序修复** | 按时间降序返回，点「刷新记录」不再把顺序翻成升序 |
-| **默认列表循环** | 默认播放模式由「顺序播放」改为「列表循环」，播完自动从头继续；升级时自动迁移存量设备的旧设置（仅一次），可在播放条随时切回 |
+| **语音记忆** | 记住之前播过的说法，再次提及直接重播（上游内置能力） |
+
+除上面两项外，其它一切都跟随官方 `songloft-plugin-miot`（默认播放模式、播放/对话日志、UI 排版等均与上游一致），因此上游更新几乎不会和本仓库冲突。
 
 上游自带能力（设备分组多房间同步、法定节假日定时任务、外部搜索源接入、DLNA 投屏接收等）保持不变，见下文。
 
 ## 与上游同步
 
-本仓库保留上游 git 血缘：首次导入对应上游 `39994df`（v2026.9.24），此后以 `git merge upstream/main` 同步。
+本仓库保留上游 git 血缘（首次导入对应上游 `39994df`），并带**自动同步 workflow**：`.github/workflows/sync-upstream.yml` 每天检查上游，能自动合并就推 main 并顺带发版，冲突或测试不过就开 issue 等你处理。
+
+手工同步（需要时）：
 
 ```bash
 git fetch upstream            # upstream = https://github.com/songloft-org/songloft-plugin-miot.git
-git merge upstream/main       # 冲突集中在 plugin.json、README/DEPLOY 与定制版接线点
+git merge upstream/main       # 预期冲突只在 plugin.json / package.json（版本号、下载地址）
 ```
+
+被改动的文件只有：`src/voicecmd/qa_fallback.ts`（新文件）、`src/voicecmd/engine.ts`（未命中分支接入 QA，约 40 行）、`src/handlers/{config,voice_command}.ts`、`src/service/service.ts`、`src/utils/{ai_url,ai_params}.ts`、`src/{types,mina/client,mina/models}.ts`、`src/config/manager.ts`，以及设置页第 5 个分栏「问答」。其余文件与上游保持一致，**升级官方能力只需拉一下**。
 
 历次同步带入的上游能力（截至 v2026.10.10）：
 
@@ -48,10 +51,6 @@ git merge upstream/main       # 冲突集中在 plugin.json、README/DEPLOY 与�
 | **AI 参数兼容** | 上游 #508：推理模型不接受自定义采样参数；本定制版按模型名自适应处理 |
 
 ## 界面预览
-
-**对话记录：来源徽标 + 分阶段耗时**（图中红字为使用要点批注）：
-
-<img src="docs/images/dialog-log.webp" width="760" alt="最近对话记录：来源徽标、判定反馈与分阶段耗时">
 
 **问答接管配置**——提示词、联网搜索、思考提示与历史轮数均可调整：
 

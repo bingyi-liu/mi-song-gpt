@@ -300,7 +300,7 @@ export function registerVoiceCommandHandlers(
         },
       };
 
-      const outcome = await voiceEngine.handleMessage(conversationMessage);
+      await voiceEngine.handleMessage(conversationMessage);
       return jsonResponse({
         success: true,
         data: {
@@ -309,7 +309,6 @@ export function registerVoiceCommandHandlers(
           account_id: target.accountId,
           device_id: target.device.device_id,
           device_name: target.device.device_name,
-          outcome,
         },
       });
     } catch (e: any) {

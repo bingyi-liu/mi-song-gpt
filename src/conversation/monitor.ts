@@ -18,11 +18,7 @@ const CLOCK_SKEW_WARN_MS = 5 * 60 * 1000;
 // ===== 类型定义 =====
 
 /** 内部回调函数类型 */
-/**
- * 对话回调。返回 VoiceOutcome（由 voice_engine 回调产生）时，
- * notifyCallbacks 会把来源回填进缓冲区的消息对象，供对话记录 UI 展示路由结果。
- */
-export type ConversationCallback = (msg: ConversationMessage) => void | Promise<void | import('../types').VoiceOutcome>;
+export type ConversationCallback = (msg: ConversationMessage) => void | Promise<void>;
 
 /** 设备监听状态 */
 interface DeviceMonitorState {
@@ -255,10 +251,6 @@ export class ConversationMonitor {
     if (limit > 0 && result.length > limit) {
       result = result.slice(result.length - limit);
     }
-
-    // 返回副本并按时间降序（最新在前）：前端「最近对话记录」与 WS 快照都按此渲染，
-    // 与实时增量推送 unshift 到顶部的顺序保持一致，否则点「刷新记录」会变回时间升序
-    result = result.slice().sort((a, b) => b.message.timestamp_ms - a.message.timestamp_ms);
 
     songloft.log.info(`[ConversationMonitor] getMessages total_stored=${this.messages.length} returning=${result.length} (limit=${limit} sinceTs=${sinceTimestampMs})`);
     return result;
@@ -577,14 +569,7 @@ export class ConversationMonitor {
       try {
         for (const msg of messages) {
           if (!isCurrent()) return;
-          const result = await cb(msg);
-          // voice_engine 回调返回处理来源（规则/记忆/搜索/AI播放/小爱原生/大模型）时回填，
-          // 同一条消息对象在缓冲区与后续 ws 广播中都能看到（mi-song-gpt）
-          if (result && typeof result === 'object' && 'source' in result) {
-            msg.outcome = result.source;
-            msg.outcome_detail = result.detail;
-            msg.outcome_meta = result.meta;
-          }
+          await cb(msg);
         }
       } catch (e) {
         songloft.log.error(`[ConversationMonitor] Callback error name=${name}: ${String(e)}`);

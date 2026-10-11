@@ -34,7 +34,7 @@
 1. 打开 songloft 网页（`http://NAS_IP:58091`）→ 插件页面
 2. 无需卸载官方"智能音箱"(miot)——本插件 entryPath 为 `mi-song-gpt`，与官方 `miot` **可共存**
 3. 上传 `dist/mi-song-gpt.jsplugin.zip` 安装
-4. 安装后确认插件名为「mi-song-gpt」，版本 `2026.10.10`
+4. 安装后确认插件名为「mi-song-gpt」，版本 `2026.10.11`
 
 > 本定制版已移除 `updateUrl`，官方仓库的自动更新**不会**覆盖你的定制版。
 
@@ -102,57 +102,20 @@ docker-compose 用户把对应 service 注释掉后 `docker compose up -d`。
 | `src/utils/ai_params.ts` | **新增**：采样参数兼容层。上游 #508 因 GPT-5/6 等推理模型拒绝 `temperature`/`max_tokens` 而全部省略，本定制版又要靠低温保证小模型判定稳定，故改为按模型名分流：推理模型（gpt-5/6、o 系列、deepseek-r1、reasoner/reasoning/thinking、qvq、裸 r1）省略，其余模型照旧（判定 0.2/120、问答 0.7/600） |
 | `src/voicecmd/engine.ts` | 全部未命中分支接入 QA 兜底；handleMessage 返回处理来源（供 UI 展示路由结果）；口令测试对 qa 指令只做诊断；新增 testQA；v2026.10.10 采用上游统一的 `matchRuleCommand`（控制/搜索一次匹配，避免歌名里的控制词被截走），同时保留定制版 `finish()` 的分阶段耗时统计 |
 | `src/conversation/monitor.ts` | voice_engine 回调返回后把处理来源回填进消息缓冲；`getMessages` 改为时间降序返回（最新在前），点「刷新记录」不再把顺序翻成升序 |
-| `src/conversation/viewmodel.ts` | 对话记录视图透传 outcome/outcome_detail |
 | `src/handlers/config.ts` | `/config` GET/POST 支持 `qa_config` |
-| `src/handlers/voice_command.ts` | 新增 `POST /voice-commands/qa-test`；`said` 端点返回处理来源 |
+| `src/handlers/voice_command.ts` | 新增 `POST /voice-commands/qa-test`（设置页「问答测试」用） |
 | `src/service/service.ts` | 新增 `getLatestAsk`（读云端对话记录） |
 | `src/utils/ai_url.ts` | 新增 `aiResponsesUrl`（方舟 Responses 端点） |
-| `src/types.ts` / `src/config/manager.ts` | 新增 `QAConfig`/`VoiceOutcome` 类型与 `qa_config` 独立存储键 |
-| `frontend/src/*` | 设置页语音分区新增第 5 个分栏「问答」（接入上游 `VoiceSectionNav`）与问答测试；对话监听状态栏新增「AI判定/问答接管」状态 chips；最近对话记录每条标注来源徽标+耗时，并新增判定反馈/分阶段耗时 meta 行 |
-| `plugin.json` | 名称改为 mi-song-gpt；entryPath 改为 `mi-song-gpt`（与官方 miot 共存）；版本 2026.10.10；**`renderEngine` 由 `webf` 改为 `webview`**（上游已移除 WebF，旧值会被新宿主拒装）；移除 updateUrl（防上游自动更新覆盖）；author 改为 wyrt0、homepage 指向本仓库、新增 download_url 指向本仓库 Release（releases/latest，供插件商店/订阅源分发） |
-| `src/account/manager.ts` / `src/player/manager.ts` 等 | 默认播放模式由「顺序播放」改为「列表循环」：新设备默认值、`normalizePlayMode` 兜底、`playMode` 初始值，以及定时任务 / 语音口令 / 联网搜歌 / 设备列表 / 前端各处兜底统一为 `loop`（模式弹层高亮改为「非列表循环才高亮」） |
-| `src/config/manager.ts` / `src/main.ts` | **新增** `migratePlayModeDefaultOnce()` 一次性迁移：把存量设备落盘的 `play_mode: 'order'` 翻成 `'loop'`（`play_mode_default_migrated` 标志位，只执行一次；之后手动切回的顺序播放不会被覆盖） |
+| `src/types.ts` / `src/config/manager.ts` | 新增 `QAConfig` 类型与 `qa_config` 独立存储键（与 `ai_config` 分离） |
+| `frontend/src/*` | 设置页语音分区新增第 5 个分栏「问答」（接入上游 `VoiceSectionNav`）与问答测试；对话监听状态栏新增「AI判定/问答接管」状态 chips |
+| `plugin.json` | 名称改为 mi-song-gpt；entryPath 改为 `mi-song-gpt`（与官方 miot 共存）；版本 2026.10.11；**`renderEngine` 由 `webf` 改为 `webview`**（上游已移除 WebF，旧值会被新宿主拒装）；移除 updateUrl（防上游自动更新覆盖）；author 改为 wyrt0、homepage 指向本仓库、新增 download_url 指向本仓库 Release（releases/latest，供插件商店/订阅源分发） |
 
 | `scripts/patch-plugin-builder.mjs` | **新增**：Windows 本地构建补丁（builder 用 `execFileSync('npm.cmd', …)`，新 Node 会报 `EINVAL`），由 `postinstall` 自动执行 |
 | `.gitattributes` | **新增**：统一 LF 行尾，避免 Windows 工作区下前端契约测试误报、构建产物与 CI 的 `zipHash` 不可复现 |
+| `.github/workflows/sync-upstream.yml` | **新增**：每天自动跟进上游 miot（能合就合+自动发版，冲突或测试不过就开 issue） |
+| `scripts/sync-upstream-version.mjs` | **新增**：把上游版本号同步到本仓库，且**不会降级**本仓库自己的版本号 |
 
-升级官方插件时，重新套用以上改动即可（qa_fallback.ts / ai_params.ts 为独立新文件，其余是小接线点）；本次已同步到上游 v2026.10.10，后续可用 `git merge upstream/main` 持续跟进。
-
-### 对话记录来源徽标说明
-
-设置页「对话监听 → 最近对话记录」每条前面的小标签表示这句话被谁处理了：
-
-| 徽标 | 含义 |
-|---|---|
-| 口令 | 命中固定口令（切歌/音量/定时…），立即执行 |
-| 记忆 | 语音记忆重播 |
-| 搜索 | 搜索口令（"播放XX"），本地曲库/外部源搜歌推流 |
-| AI播放 | AI 语义判定出的播放意图并已执行（悬浮可见动作） |
-| 小爱 | 小爱原生回答有效，插件未打扰 |
-| 大模型 | 小爱答不上，问答大模型接管（悬浮可见是否联网） |
-| 无徽标 | 未接管（引擎/问答未启用，或 LLM 失败交还小爱） |
-
-状态栏新增两个指示：「AI判定」显示判定模型启用状态与连通延迟（进页面自动检测）；「问答接管」显示问答模型启用状态与模型名（换模型后保存即刷新，不是固定标签）。
-
-### 对话记录 meta 行（判定反馈与耗时）
-
-每条记录下方还有一行灰色 meta，徽标上则直接带总耗时：
-
-```
-[大模型 · 8.1s]  今天上证指数
-                 小米AI音箱 · 本设备暂不支持该功能…
-                 判定 问答·高置信 → 转问答 · 语义判定 186ms · 小爱原生回答 6.2s · 大模型 1.4s · 共 8.1s
-```
-
-| 字段 | 含义 |
-|---|---|
-| `判定 <动作>·<高/中/低>置信 → <走向>` | 语义判定器返回的 action 与置信度；走向 = 已执行 / 未执行 / 转问答 / 交回小爱 / 未接管。**判定器启用时无论是否执行都会显示**，因此能直接看到「为什么没执行」 |
-| 各阶段耗时 | 只列该条实际走过的阶段：固定口令匹配 / 口令匹配 / 记忆查询 / 语义判定 / 执行 / 小爱原生回答 / 大模型 |
-| `共 X` | 从收到消息到处理完成的总耗时 |
-
-> 两点区分：状态栏「AI判定 正常 243ms」是**连通性探测**耗时，与记录里的处理耗时无关；meta 行只对安装本版本后**新产生**的记录有效，历史记录没有该字段，整行与徽标耗时会自动隐藏。
-
-> 注意：徽标在引擎处理完成后回填，WebSocket 实时推来的最新一条可能要等下一次列表刷新才显示徽标，属正常现象。
+定制面已经收敛到**只有问答接管**：`qa_fallback.ts` / `ai_params.ts` 是独立新文件，`engine.ts` 只在「全部未命中」那一个分支接了 QA（约 40 行），其余是小接线点。上游更新交给 `.github/workflows/sync-upstream.yml` 自动跟即可。
 
 ## 七、已知行为与排错
 
@@ -161,7 +124,8 @@ docker-compose 用户把对应 service 注释掉后 `docker compose up -d`。
 - **联网问题回答"可能不是最新"**：方舟联网插件未开通或搜索失败，自动降级为普通回答
 - **小爱 answered 但被判"没找到歌曲"**：这是预期——判定为疑似播放指令但本地没这首歌时，让大模型接话而不是播报"没找到"
 - **语义判定 2~5s**：prompt 已精简，普通模型 `max_tokens` 已降到 120，剩下是模型生成速度与网络本身；线上 API 就是这个量级（J3455 上跑本地小模型不划算）
-- **上传插件报 `renderEngine must be "webview" or "lynx"`**：旧包声明的 `webf` 已被上游 v2.13.0 移除，本仓库 v2026.10.9 起改为 `webview`，重新构建上传即可
+- **上传插件报 `renderEngine must be "webview" or "lynx"`**：旧包声明的 `webf` 已被上游 v2.13.0 移除，本仓库已改为 `webview`，重新构建上传即可
+- **上游更新怎么跟？**：不用管，`Sync upstream miot` workflow 每天自动合 + 自动发版；真冲突会开 issue 提示你要手处理的文件
 - **整点报时时播放被中断**：设置 → 播放 → 「整点报时后续播」（默认关）开启后，整点后 90 秒内的报时打断会自动续播；不想让它自动恢复就保持关闭
 - **Windows 构建报 `spawnSync npm.cmd EINVAL`**：执行一次 `node scripts/patch-plugin-builder.mjs`（`npm install` 的 postinstall 会自动跑）
 - 查看日志：songloft 插件页面下载日志，搜索 `[QA]` / `[VoiceEngine]` 关键字

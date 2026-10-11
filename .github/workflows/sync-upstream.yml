@@ -1,0 +1,144 @@
+name: Sync upstream miot
+
+# 自动跟进 songloft-plugin-miot：
+#   1. 每天检查上游是否有新提交（也可手动触发）
+#   2. 尝试合并；只有 plugin.json / package.json 冲突时自动保留本 fork 的元数据
+#   3. 合并后必须跑通「构建 + 全部测试」，否则中止（仓库不被修改）
+#   4. 通过则推送并顺带触发发版；冲突/测试失败则开 issue 等人工处理
+#
+# 定制面只有问答接管（qa_fallback + engine 一处接线 + 设置页一个分栏），
+# 所以绝大多数上游更新都能自动合过去；真的冲突时会明确告诉你哪些文件要手处理。
+
+on:
+  schedule:
+    # 每天 UTC 01:37（北京时间 09:37）检查一次
+    - cron: '37 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 检查上游是否有新提交
+        id: upstream
+        run: |
+          git remote add upstream https://github.com/songloft-org/songloft-plugin-miot.git
+          git fetch --no-tags upstream main
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "behind=false" >> $GITHUB_OUTPUT
+            echo "上游没有新提交，跳过"
+          else
+            VERSION="$(git show upstream/main:plugin.json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).version))")"
+            echo "behind=true" >> $GITHUB_OUTPUT
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "上游新提交：$(git rev-list --count HEAD..upstream/main) 个，上游版本 ${VERSION}"
+            git log --oneline HEAD..upstream/main
+          fi
+
+      - name: 尝试合并上游
+        if: steps.upstream.outputs.behind == 'true'
+        id: merge
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          if git merge --no-commit --no-ff upstream/main; then
+            echo "conflict=false" >> $GITHUB_OUTPUT
+            echo "合并干净"
+            exit 0
+          fi
+          # 只允许元数据文件冲突（上游改版本号/下载地址，本 fork 保留自己的元数据）
+          others="$(git diff --name-only --diff-filter=U | grep -vxE 'plugin\.json|package\.json' || true)"
+          if [ -n "$others" ]; then
+            git merge --abort
+            echo "conflict=true" >> $GITHUB_OUTPUT
+            { echo 'files<<EOF'; echo "$others"; echo 'EOF'; } >> $GITHUB_OUTPUT
+            echo "存在需要人工处理的冲突："
+            echo "$others"
+            exit 0
+          fi
+          git checkout --ours -- plugin.json package.json
+          git add plugin.json package.json
+          echo "conflict=false" >> $GITHUB_OUTPUT
+          echo "仅 plugin.json / package.json 冲突，已保留本 fork 元数据"
+
+      - name: 版本号跟随上游（不降级）
+        if: steps.merge.outputs.conflict == 'false'
+        run: node scripts/sync-upstream-version.mjs "${{ steps.upstream.outputs.version }}"
+
+      - name: 安装依赖
+        if: steps.merge.outputs.conflict == 'false'
+        run: |
+          npm ci --no-audit --no-fund
+          cd frontend && npm ci --no-audit --no-fund
+
+      - name: 构建与测试（不通过就不推）
+        if: steps.merge.outputs.conflict == 'false'
+        run: |
+          # 前端契约测试读构建产物，所以先构建前端再跑测试
+          (cd frontend && npx vite build && npm test)
+          node --test tests/*.mjs
+          npm run build
+          npm run validate
+
+      - name: 提交并推送
+        if: steps.merge.outputs.conflict == 'false'
+        run: |
+          git add -A
+          if git diff --cached --quiet && [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+            echo "无可提交内容，跳过"
+            exit 0
+          fi
+          git commit -m "chore: sync upstream miot v${{ steps.upstream.outputs.version }}"
+          git push origin HEAD:${{ github.ref_name }}
+
+      - name: 触发发版
+        if: steps.merge.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run release.yml --ref "${{ github.ref_name }}" -f version="${{ steps.upstream.outputs.version }}"
+
+      - name: 冲突时开 issue
+        if: steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="上游 miot v${{ steps.upstream.outputs.version }} 合并冲突，需要手动处理"
+          if gh issue list --state open --search "$TITLE" | grep -q .; then
+            echo "已有相同 issue，跳过创建"
+            exit 0
+          fi
+          cat > /tmp/issue.md <<'EOF'
+          自动同步遇到冲突，已中止（仓库未被修改）。
+
+          冲突文件：
+          ```
+          ${{ steps.merge.outputs.files }}
+          ```
+
+          本地处理方式：
+          ```bash
+          git fetch upstream && git merge upstream/main
+          # 冲突解决后跑：node --test tests/*.mjs && npm run build && npm run validate
+          ```
+          EOF
+          gh issue create --title "$TITLE" --body-file /tmp/issue.md

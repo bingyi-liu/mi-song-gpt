@@ -204,31 +204,6 @@ export interface ConversationMessage {
   query?: string;
   text?: string;
   answer?: string;
-  /** 语音引擎处理来源：rule=口令 memory=记忆 search=搜索 ai=AI播放 xiaoai=小爱原生 llm=大模型接管 */
-  outcome?: string;
-  /** 来源补充说明（命中口令/AI 动作等） */
-  outcome_detail?: string;
-  /** 判定反馈与分阶段耗时（meta 行）：只有新产生的记录才有，历史记录缺省 */
-  outcome_meta?: OutcomeMeta;
-}
-
-/** 单个处理阶段的耗时 */
-export interface OutcomeStage {
-  key: string;
-  label: string;
-  ms: number;
-}
-
-/** 语音引擎的判定反馈与耗时明细 */
-export interface OutcomeMeta {
-  /** 语义判定结果（判定器启用时无论是否执行都会带上） */
-  ai?: { action: string; confidence: string; params?: unknown };
-  /** 分阶段耗时（按发生顺序） */
-  stages?: OutcomeStage[];
-  /** 处理总耗时 */
-  total_ms: number;
-  /** 是否真正执行了动作或完成接管 */
-  executed?: boolean;
 }
 
 export interface Webhook {

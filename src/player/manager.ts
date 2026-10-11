@@ -245,7 +245,7 @@ export async function resolvePlaylistResumeStart(
 }
 
 /** 统一播放模式，并兼容旧版 Web 前端曾写入的别名。 */
-export function normalizePlayMode(mode: unknown, fallback: PlayMode = 'loop'): PlayMode {
+export function normalizePlayMode(mode: unknown, fallback: PlayMode = 'order'): PlayMode {
   switch (String(mode || '')) {
     case 'order':
       return 'order';
@@ -312,7 +312,7 @@ export class PlaylistManager {
   private configManager: ConfigManager;
 
   private state: PlayState = 'idle';
-  private playMode: PlayMode = 'loop';
+  private playMode: PlayMode = 'order';
   private playlistId: number = 0;
   private songs: Song[] = [];
   private currentIndex: number = 0;
@@ -474,7 +474,7 @@ export class PlaylistManager {
    * 播放歌单
    * @param playlistId - 歌单ID
    * @param startIndex - 起始歌曲索引（默认0）
-   * @param mode - 播放模式（默认loop）
+   * @param mode - 播放模式（默认order）
    * @param opts.randomStart - 忽略 startIndex，加载歌单后随机挑一首作为起点
    * @returns 是否成功
    */
@@ -536,7 +536,7 @@ export class PlaylistManager {
    * 找不到该歌曲时回退到 fallbackIndex（未传则歌单头部）。
    * @param playlistId - 歌单ID
    * @param songId - 起始歌曲ID（通常是刚追加到歌单末尾的那首）
-   * @param mode - 播放模式（默认loop）
+   * @param mode - 播放模式（默认order）
    * @param fallbackIndex - 歌单内找不到 songId 时的兜底起始下标
    * @returns 是否成功
    */
@@ -1200,7 +1200,7 @@ export class PlaylistManager {
   /**
    * 获取当前播放位置（秒，曲内绝对位置）
    *
-   * 倍��下「墙钟经过秒数」不等于「曲内经过秒数」：1.5x 流播放 1 墙钟秒 = 1.5 曲内秒。
+   * 倍速下「墙钟经过秒数」不等于「曲内经过秒数」：1.5x 流播放 1 墙钟秒 = 1.5 曲内秒。
    * playStartTimeMs 在 playCurrent 里按 1/speed 反向缩放锚定（见那处的注释），
    * 这里要再按 speed 正向缩放回来，得到「从 seekSeconds 起、按 speed 倍速流逝」的曲内绝对位置。
    */
@@ -1793,7 +1793,7 @@ export class PlaylistManager {
     // 上报后端：#466。当前用 played 端点 event=landing_failed；后端后续可据此做临时降权
     // （例如全歌单播放时把这首放到末尾）。端点存在容错：后端未实现该 event 时忽略即可。
     if (songIdAtLanding > 0) {
-      callHostAPI('POST', `/api/v1/songs/${songIdAtLanding}/played?source=mi-song-gpt&event=landing_failed`, undefined, { timeoutMs: 3000 }).catch(e => {
+      callHostAPI('POST', `/api/v1/songs/${songIdAtLanding}/played?source=miot&event=landing_failed`, undefined, { timeoutMs: 3000 }).catch(e => {
         songloft.log.warn('[PlaylistManager] landing_failed notify failed: ' + String(e));
       });
     }
@@ -2348,7 +2348,7 @@ export class PlaylistManager {
           return;
         }
       }
-      // status != 1 或未上报 position���不计��，等下一轮
+      // status != 1 或未上报 position：不计入，等下一轮
     } catch (e) {
       songloft.log.warn('[PlaylistManager] duration probe query failed: ' + String(e));
     }
@@ -2501,7 +2501,7 @@ export class PlaylistManager {
   }
 
   /**
-   * 安排下一次外部停止����测。每次重新校准自动切歌定时器（resetAutoNextTimer / 续播等）
+   * 安排下一次外部停止探测。每次重新校准自动切歌定时器（resetAutoNextTimer / 续播等）
    * 都会经 startCheckTimer 重走这里，探测计划随之刷新，与切歌定时器保持同源。
    *
    * 按 stopPollDeadlineMs（绝对截止墙钟）决定是否继续以及等多久：旧实现把剩余预算按
@@ -2941,7 +2941,7 @@ export class PlaylistManager {
     // 通知后端当前歌曲播放完成（触发 JS 插件播放事件广播）
     const finishedSong = this.songs[this.currentIndex];
     if (finishedSong && finishedSong.id > 0) {
-      callHostAPI('POST', `/api/v1/songs/${finishedSong.id}/played?source=mi-song-gpt`, undefined, { timeoutMs: 3000 }).catch(e => {
+      callHostAPI('POST', `/api/v1/songs/${finishedSong.id}/played?source=miot`, undefined, { timeoutMs: 3000 }).catch(e => {
         songloft.log.warn('[PlaylistManager] songPlayed notify failed: ' + String(e));
       });
     }

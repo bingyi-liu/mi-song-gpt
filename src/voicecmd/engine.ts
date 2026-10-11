@@ -23,7 +23,7 @@ import type { PlaylistManager } from '../player/manager';
 import type { SongLocation, ArtistSongLocation } from '../indexing/manager';
 import type { MemoryRecord } from '../memory';
 import type { OnlineSearchResult } from './online_searcher';
-import type { ConversationMessage, VoiceCommand, PlayMode, AIAnalysisResult, SearchPriority, VoiceOutcome, VoiceOutcomeSource, OutcomeStage } from '../types';
+import type { ConversationMessage, VoiceCommand, PlayMode, AIAnalysisResult, SearchPriority } from '../types';
 import { getDefaultVoiceCommands } from './defaults';
 export { getDefaultVoiceCommands } from './defaults';
 
@@ -215,6 +215,7 @@ export class VoiceEngine {
   private aiAnalyzer: AIAnalyzer;
   private onlineSearcher: OnlineSearcher;
   private memoryService: MemoryService;
+  /** 问答接管（mi-song-gpt 定制）：音乐意图未命中时决定是否由大模型接管 */
   private qaFallback: QAFallback;
   private groupCoordinator?: GroupCoordinator;
   private memoryInitialized: boolean = false;
@@ -302,34 +303,16 @@ export class VoiceEngine {
    * 处理新对话消息（由 ConversationMonitor 回调触发）
    * @param msg - 对话消息
    */
-  async handleMessage(msg: ConversationMessage): Promise<VoiceOutcome> {
-    // 走到哪一步就记哪一段耗时，最后统一由 finish() 产出 VoiceOutcome：
-    // 判定反馈（meta.ai，无论是否执行）+ 分阶段耗时 + 总耗时，供对话记录 UI meta 行展示
-    const t0 = Date.now();
-    const stages: OutcomeStage[] = [];
-    let aiResult: AIAnalysisResult | null = null;
-    const finish = (source: VoiceOutcomeSource, detail?: string, executed?: boolean): VoiceOutcome => ({
-      source,
-      detail,
-      meta: {
-        ...(aiResult ? { ai: { action: aiResult.action, confidence: aiResult.confidence, params: aiResult.params } } : {}),
-        ...(stages.length ? { stages } : {}),
-        total_ms: Date.now() - t0,
-        ...(executed === undefined ? {} : { executed }),
-      },
-    });
-
+  async handleMessage(msg: ConversationMessage): Promise<void> {
     // 从 AskMessage 中提取 query
     const query = this.extractQuery(msg);
     if (!query || query.trim() === '') {
-      return finish('none', '空查询', false);
+      return;
     }
 
     // 整点续播独立于语音口令开关；新对话仍须立即作废旧任务。
     this.playlistManagerMap.cancelHourlyResumes(msg.device_id);
-    if (!this.enabled) {
-      return finish('none', '引擎未启用', false);
-    }
+    if (!this.enabled) return;
 
     // 不能等账号查询、规则匹配或 AI 请求结束后才取消语音恢复。
     this.cancelPendingResume(msg.account_id, msg.device_id);
@@ -338,23 +321,17 @@ export class VoiceEngine {
     const accountId = await this.findAccountForDevice(msg.device_id);
     if (!accountId) {
       songloft.log.warn(`[VoiceEngine] No account found for device: ${msg.device_id}`);
-      return finish('none', '设备无账号', false);
+      return;
     }
 
-    // 控制与搜索命令共同匹配（上游 v2026.10.10：避免歌名/歌单名里的控制词被截走），
-    // 胜出的控制仍先于 memory 和 AI 执行。耗时沿用定制版的分阶段统计。
+    // 控制与搜索命令共同匹配，避免控制词截走歌名/歌单名；胜出的控制仍先于 memory 和 AI 执行。
     songloft.log.info(`[VoiceEngine] [Rule] Matching query="${query}"`);
-    const ruleMatchStart = Date.now();
     const ruleResult = await this.matchRuleCommand(query);
-    const ruleMatchMs = Date.now() - ruleMatchStart;
     const fixedResult = ruleResult && FIXED_CONTROL_COMMAND_TYPES.has(ruleResult.command.type) ? ruleResult : null;
     if (fixedResult) {
       songloft.log.info(`[VoiceEngine] [Rule] → Matched fixed control: type=${fixedResult.command.type} keyword="${fixedResult.keyword}" argument="${fixedResult.argument}"`);
-      stages.push({ key: 'rule', label: '固定口令匹配', ms: ruleMatchMs });
-      const fixedExecStart = Date.now();
       await this.executeCommand(fixedResult, accountId, msg.device_id, query);
-      stages.push({ key: 'exec', label: '执行', ms: Date.now() - fixedExecStart });
-      return finish('rule', `${fixedResult.command.type}${fixedResult.argument ? ' · ' + fixedResult.argument : ''}`, true);
+      return;
     }
 
     let memoryEnabled = false;
@@ -363,11 +340,9 @@ export class VoiceEngine {
       memoryEnabled = pluginConfig.voice_memory_enabled;
       await this.memoryService.setMaxRecords(pluginConfig.voice_memory_max_records);
       if (memoryEnabled) {
-        const memoryStart = Date.now();
         const memoryHandled = await this.tryHandleMemory(query, accountId, msg.device_id);
         if (memoryHandled) {
-          stages.push({ key: 'memory', label: '记忆查询', ms: Date.now() - memoryStart });
-          return finish('memory', undefined, true);
+          return;
         }
       } else {
         songloft.log.info('[VoiceMemoryV2] miss reason="disabled"');
@@ -377,45 +352,38 @@ export class VoiceEngine {
       songloft.log.warn('[VoiceMemoryV2] error fallback stage="config_or_memory" error="' + String(error) + '"');
     }
 
-    // 歌曲/歌单规则匹配：复用上面统一次匹配的结果（上游不再重复执行一次匹配，
-    // 否则“歌名里带控制词”的句子会被第二次匹配重新截走）
-    songloft.log.info(`[VoiceEngine] [Rule] Checking search match query="${query}"`);
+    // 歌曲/歌单规则匹配
+    songloft.log.info(`[VoiceEngine] [Rule] Matching search query="${query}"`);
     const result = ruleResult && SEARCH_COMMAND_TYPES.has(ruleResult.command.type) ? ruleResult : null;
     if (result) {
       songloft.log.info(`[VoiceEngine] [Rule] → Matched search: type=${result.command.type} keyword="${result.keyword}" argument="${result.argument}"`);
-      stages.push({ key: 'search', label: '口令匹配', ms: ruleMatchMs });
 
       // 执行口令
-      const searchExecStart = Date.now();
       const playedSong = await this.executeCommand(result, accountId, msg.device_id);
-      stages.push({ key: 'exec', label: '执行', ms: Date.now() - searchExecStart });
       if (memoryEnabled && (result.command.type === 'play_song' || result.command.type === 'play_artist') && playedSong) {
         this.queueMemorySuccess(query, playedSong);
       }
-      return finish('search', `${result.command.type}${result.argument ? ' · ' + result.argument : ''}`, true);
+      return;
     }
 
     songloft.log.info(`[VoiceEngine] [Rule] No search match found`);
 
-    // AI 兜底（如果启用）。aiResult 已在方法开头声明：即便判定结果最终没执行，
-    // 也会作为 meta.ai 回填到对话记录，让用户看到「语义判定到底判成了什么」
+    // AI 兜底（如果启用）。aiResult 提到函数作用域：即使判定结果没执行，
+    // 也要交给下面的问答接管做候选判定（qa/unknown/低置信 → 走问答）。
+    let aiResult: AIAnalysisResult | null = null;
     const aiConfig = await this.configManager.getAIConfig();
     if (aiConfig.enabled) {
       songloft.log.info(`[VoiceEngine] [AI] Analyzing query="${query}"`);
-      const aiStart = Date.now();
       aiResult = await this.aiAnalyzer.analyze(query, aiConfig);
-      stages.push({ key: 'ai', label: '语义判定', ms: Date.now() - aiStart });
       if (aiResult) {
         songloft.log.info(`[VoiceEngine] [AI] Done: action=${aiResult.action} confidence=${aiResult.confidence} params=${JSON.stringify(aiResult.params)}`);
-        if (aiResult.confidence !== 'low' && aiResult.action !== 'unknown' && aiResult.action !== 'qa') {
+        if (aiResult.confidence !== 'low' && aiResult.action !== 'unknown') {
           songloft.log.info(`[VoiceEngine] [AI] → Executing fallback (high confidence, action=${aiResult.action})`);
-          const aiExecStart = Date.now();
           const playedSong = await this.executeAIResult(aiResult, accountId, msg.device_id);
-          stages.push({ key: 'exec', label: '执行', ms: Date.now() - aiExecStart });
           if (memoryEnabled && (aiResult.action === 'play_song' || aiResult.action === 'play_artist') && playedSong) {
             this.queueMemorySuccess(query, playedSong);
           }
-          return finish('ai', `${aiResult.action} · ${playedSong ? '已播放' : '未命中歌曲'}`, true);
+          return;
         }
         songloft.log.info(`[VoiceEngine] [AI] → No fallback execution (action=${aiResult.action}, confidence=${aiResult.confidence})`);
       } else {
@@ -423,8 +391,8 @@ export class VoiceEngine {
       }
     }
 
-    // QA 问答接管（mi-song-gpt）：音乐意图未命中的指令，先看小爱能不能自己答；
-    // 答不上来（命中兜底话术/超时）才打断并交给问答大模型。handled=true 表示 QA 已完整接管。
+    // QA 问答接管（mi-song-gpt 定制）：音乐意图未命中的指令，先看小爱能不能自己答；
+    // 答不上来（命中兜底话术/超时）才打断并交给问答大模型。这是本 fork 唯一的定制点。
     const pm = this.playlistManagerMap.get(accountId, msg.device_id);
     const wasPlaying = !!(pm && pm.isPlaying());
     if (wasPlaying) {
@@ -432,25 +400,19 @@ export class VoiceEngine {
       pm.suspendForVoiceInteraction();
     }
     const qa = await this.qaFallback.handle({ msg, query, accountId, aiResult, aiEnabled: aiConfig.enabled });
-    if (qa.elapsed?.native_ms !== undefined) {
-      stages.push({ key: 'native', label: '小爱原生回答', ms: qa.elapsed.native_ms });
-    }
-    if (qa.elapsed?.llm_ms !== undefined) {
-      stages.push({ key: 'llm', label: '大模型', ms: qa.elapsed.llm_ms });
-    }
     if (qa.handled) {
+      songloft.log.info(`[VoiceEngine] QA handled (${qa.outcome})${wasPlaying ? ', scheduling smart resume' : ''}`);
       if (wasPlaying) {
-        songloft.log.info('[VoiceEngine] QA handled while playing, scheduling smart resume');
         this.scheduleSmartResume(pm, accountId, msg.device_id);
       }
-      return finish('llm', qa.note || '', true);
+      return;
     }
     if (qa.outcome === 'answered_by_xiaoai') {
       // 小爱能自己答：不打扰，音乐播放被打断过的话安排智能恢复
       if (wasPlaying) {
         this.scheduleSmartResume(pm, accountId, msg.device_id);
       }
-      return finish('xiaoai', undefined, false);
+      return;
     }
 
     // QA 未接管（未启用/配置不全/LLM 失败）：任何语音交互都会唤醒音箱并打断 URL 播放，
@@ -459,7 +421,6 @@ export class VoiceEngine {
       songloft.log.info('[VoiceEngine] Unmatched command while playing, scheduling smart resume');
       this.scheduleSmartResume(pm, accountId, msg.device_id);
     }
-    return finish('none', qa.note || '未接管', false);
   }
 
   private async ensureMemoryInitialized(): Promise<void> {
@@ -642,6 +603,11 @@ export class VoiceEngine {
    * @param deviceId - 目标设备（实际投放到该设备）
    * @param accountId - 可选，缺省时按 deviceId 反查
    */
+  /** 问答接管测试（设置页「问答测试」按钮）：不打断音箱、不写历史 */
+  async testQA(query: string): Promise<import('./qa_fallback').QATestResult> {
+    return this.qaFallback.testQA(query);
+  }
+
   async testCommand(query: string, deviceId: string, accountId?: string): Promise<CommandTestResult> {
     const testStart = Date.now();
     const q = (query || '').trim();
@@ -664,16 +630,6 @@ export class VoiceEngine {
       const aiStart = Date.now();
       const aiResult = await this.aiAnalyzer.analyze(q, aiConfig);
       songloft.log.info(`[VoiceEngine] [Test] AI analyze done in ${Date.now() - aiStart}ms → ${aiResult ? `action=${aiResult.action} confidence=${aiResult.confidence}` : 'null'}`);
-      // 问答类指令：口令测试只做诊断，不实际打断音箱/调用问答模型（可在设置页用「问答测试」验证）
-      if (aiResult && aiResult.confidence !== 'low' && aiResult.action === 'qa') {
-        return {
-          matched: false,
-          source: 'ai',
-          ai: { action: aiResult.action, confidence: aiResult.confidence, params: aiResult.params },
-          executed: false,
-          note: '问答类指令：由问答接管流程处理（不打断音箱，可在「语音」页用问答测试验证）',
-        };
-      }
       if (aiResult && aiResult.confidence !== 'low' && aiResult.action !== 'unknown') {
         const search = await this.previewForAI(aiResult);
         const execStart = Date.now();
@@ -726,20 +682,6 @@ export class VoiceEngine {
       search,
       executed: true,
     };
-  }
-
-  /**
-   * 问答测试：验证 qa_config 链路（普通对话/联网搜索降级），不触发 TTS、不写历史。
-   * 供设置页「问答测试」按钮调用。
-   */
-  async testQA(query: string): Promise<import('./qa_fallback').QATestResult> {
-    return this.qaFallback.testQA(query);
-  }
-
-  /** 问答接管是否已启用（供状态展示） */
-  async isQAEnabled(): Promise<boolean> {
-    const cfg = await this.configManager.getQAConfig();
-    return !!(cfg.enabled && cfg.api_url.trim() && cfg.api_key.trim() && cfg.model.trim());
   }
 
   /** 搜索预览：按命令类型在本地索引查一遍，报告将命中的歌曲/歌单（不影响实际执行） */
@@ -1183,7 +1125,7 @@ export class VoiceEngine {
     songloft.log.info(`[VoiceEngine] Matched playlist: ${matchedPlaylist.name} (id=${matchedPlaylist.id})`);
 
     // 获取设备配置中的播放模式
-    let playMode: PlayMode = 'loop';
+    let playMode: PlayMode = 'order';
 
     const devices = await this.configManager.getDevices(accountId);
     const devCfg = devices.find(d => d.device_id === deviceId);
@@ -1807,7 +1749,7 @@ export class VoiceEngine {
     songloft.log.info(`[VoiceEngine] Matched song: ${loc.songTitle} - ${loc.artist} playlist="${loc.playlistName}" playlistId=${loc.playlistId} songIndex=${loc.songIndex}`);
 
     // 获取设备配置中的播放模式
-    let playMode: PlayMode = 'loop';
+    let playMode: PlayMode = 'order';
     const devices = await this.configManager.getDevices(accountId);
     const devCfg = devices.find(d => d.device_id === deviceId);
     if (devCfg && devCfg.play_mode) {

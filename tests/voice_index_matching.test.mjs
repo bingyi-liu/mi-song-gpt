@@ -357,8 +357,7 @@ for (const name of ['继续听', '取消收藏歌曲', '不存在的歌单']) {
       assert.deepEqual(speech, [`未找到歌单：${name}`]);
       assert.ok(warnings.includes(`[VoiceEngine] Playlist not found: ${name} (indexReady=true playlists=2 refreshing=false)`));
     } else {
-      // mi-song-gpt 定制：默认播放模式已由 order 改为 loop（含存量一次性迁移）
-      assert.deepEqual(plays, [[name === '继续听' ? 7 : 8, 0, 'loop']]);
+      assert.deepEqual(plays, [[name === '继续听' ? 7 : 8, 0, 'order']]);
       assert.deepEqual(speech, []);
     }
   });

@@ -400,7 +400,7 @@ async function cancelSleepTimer(): Promise<void> {
       <div ref="toolsRef" class="player-bar-tools" @click.stop>
         <PlayerModePopup
           v-if="!showInlinePlayMode"
-          :model-value="state.player.play_mode || 'loop'"
+          :model-value="state.player.play_mode || 'order'"
           popup-id="bar-mode"
           :disabled="state.playerBusy"
           @change="setPlayMode"
